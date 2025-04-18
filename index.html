@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ricerca PEC da P.IVA</title>
+  <!-- Google Font -->
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Sfondo tipo chat di WhatsApp */
+    body { font-family: 'Roboto', sans-serif; background-color: #ECE5DD; }
+  </style>
+</head>
+<body class="flex items-center justify-center min-h-screen">
+  <div class="bg-white shadow-xl rounded-2xl p-8 w-full max-w-md mx-4">
+    <h1 class="text-4xl font-bold text-gray-800 mb-6 text-center">Trova la PEC Aziendale</h1>
+    <!-- Single Search Form -->
+    <form action="/get_pec" method="post" class="space-y-4">
+      <div>
+        <label for="vat" class="block text-gray-700 font-medium">P.IVA</label>
+        <input type="text" id="vat" name="vat" placeholder="es. 04835220239"
+          class="mt-1 block w-full border border-gray-300 rounded-2xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+      </div>
+      <button type="submit"
+        class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-2xl transition-shadow shadow-md">Cerca PEC</button>
+    </form>
+    <div class="flex items-center my-8">
+      <hr class="flex-grow border-gray-300" />
+      <span class="px-4 text-gray-500 uppercase text-sm">o</span>
+      <hr class="flex-grow border-gray-300" />
+    </div>
+    <!-- Bulk Upload Form -->
+    <form action="/bulk_upload" method="post" enctype="multipart/form-data" class="space-y-4">
+      <div>
+        <label for="file" class="block text-gray-700 font-medium">Caricamento Massivo (Excel)</label>
+        <input type="file" id="file" name="file" accept=".xlsx"
+          class="mt-1 block w-full text-gray-600 file:py-2 file:px-4 file:rounded-2xl file:border-0 file:bg-blue-600 file:text-white hover:file:bg-blue-700" required>
+      </div>
+      <button type="submit"
+        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-2xl transition-shadow shadow-md">Carica e Avvia</button>
+    </form>
+  </div>
+</body>
+</html>
