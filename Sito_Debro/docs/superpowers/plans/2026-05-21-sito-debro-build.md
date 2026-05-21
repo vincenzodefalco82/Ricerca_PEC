@@ -1,1206 +1,1299 @@
 # Sito Debro Group — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Stack:** Odoo Online 19.0 — Website module. Automazione via JSON-2 API (Python).
+> **Design Spec:** `docs/superpowers/specs/2026-05-21-sito-debro-design.md`
+> **API Research:** `docs/research/odoo-website-api.md`
 
-**Goal:** Costruire il sito WordPress del Gruppo Debro — homepage scroll + 4 pagine BU + contatti, in IT e EN, con Elementor Pro + Astra.
-
-**Architecture:** WordPress con Elementor Pro come page builder e Astra Pro come tema base. Ogni pagina BU segue un template condiviso costruito come Elementor Template. La multilingua è gestita da WPML con struttura URL `/en/` per la versione inglese.
-
-**Tech Stack:** WordPress 6.x, Elementor Pro 3.x, Astra Pro, Yoast SEO, WP Rocket, WPML, Wordfence, WPForms, Cookie Law Info, Cloudflare CDN
-
-**Design Spec:** `docs/superpowers/specs/2026-05-21-sito-debro-design.md`
-
-**Copy IT approvato:** vedere sessione di brainstorming e memory agent copywriter
+**Goal:** Homepage + 4 pagine BU + Contatti, IT e EN, interamente su Odoo.
+**Automazione:** ~80% via script Python JSON-2. Passi manuali esplicitamente marcati ⚙️.
 
 ---
 
-## Task 1: Hosting + WordPress install
+## Setup — Configurazione environment
 
-**Checkpoint:** WordPress accessibile su dominio/staging, admin funzionante.
+Prima di ogni task, crea `scripts/config.py`:
 
-- [ ] **Step 1: Scegli hosting**
+```python
+# scripts/config.py
+ODOO_URL  = "https://INSERISCI.odoo.com"   # sostituisci
+API_KEY   = "INSERISCI_API_KEY"             # Settings → Users → API Keys
+WEBSITE_ID = None   # recuperato in Task 1 Step 1
+MAIN_MENU_ID = None # recuperato in Task 1 Step 3
+```
 
-  Vai su SiteGround Business o Kinsta Starter. Crea account. Registra/trasferisci `debro.it` o usa sottodominio staging (es. `staging.debro.it`) per sviluppo.
+Aggiungi `scripts/config.py` a `.gitignore` — contiene credenziali.
 
-- [ ] **Step 2: Installa WordPress**
+Helper comune (incolla in ogni script o importa):
 
-  Dal pannello hosting usa il wizard one-click WordPress install. Impostazioni:
-  - Site title: `Debro Group`
-  - Admin email: `vincenzo.defalco@debro.it`
-  - Username: non usare `admin` — scegli username personalizzato
-  - Language: Italiano
+```python
+import requests, json
 
-- [ ] **Step 3: Configura impostazioni base WordPress**
-
-  Vai in **Impostazioni → Generali**:
-  - Titolo sito: `Debro Group`
-  - Tagline: `Competenze reali. Risultati concreti.`
-  - Timezone: `Rome`
-
-  Vai in **Impostazioni → Permalink**:
-  - Seleziona: `Nome articolo` (`/%postname%/`)
-  - Salva
-
-- [ ] **Step 4: Disabilita commenti globalmente**
-
-  Vai in **Impostazioni → Discussione**:
-  - Deseleziona tutto nella sezione "Impostazioni predefinite articolo"
-  - Salva
-
-- [ ] **Step 5: Elimina contenuto demo**
-
-  Vai in **Articoli** → elimina "Hello World". Vai in **Pagine** → elimina "Sample Page".
-
-- [ ] **Step 6: Configura DNS Odoo → WordPress hosting**
-
-  Il DNS di `debro.it` è gestito da Odoo Online. Vai in **Odoo → Settings → Domain Names → debro.it → DNS Records**.
-
-  **Opzione A — gestione DNS diretta in Odoo (semplice):**
-  ```
-  Tipo A    Nome: @    Valore: [IP hosting WordPress]   TTL: 3600
-  Tipo A    Nome: www  Valore: [IP hosting WordPress]   TTL: 3600
-  ```
-
-  **Opzione B — delega a Cloudflare (raccomandato per Task 12 — performance + sicurezza):**
-  - Crea account Cloudflare → aggiungi dominio `debro.it`
-  - Cloudflare rileva i record DNS esistenti automaticamente
-  - In Odoo → DNS Records: sostituisci i nameservers con quelli Cloudflare:
-    ```
-    ns1.cloudflare.com
-    ns2.cloudflare.com
-    ```
-  - Gestisci tutti i record A/CNAME da Cloudflare da quel momento
-
-  ⚠️ Propagazione DNS: fino a 48h. Esegui questo step prima di iniziare lo sviluppo su staging — usa sottodominio `staging.debro.it` durante la build per non interrompere eventuali servizi Odoo esistenti su `debro.it`.
-
-- [ ] **Step 7: Verifica**
-
-  Apri `debro.it` (o staging URL) nel browser. Vedi schermata WordPress base. Admin login funziona. ✓
-
-- [ ] **Step 8: Checkpoint git**
-
-  ```bash
-  # Esporta settings WordPress come riferimento
-  # In WP Admin: Strumenti → Esporta → Tutto il contenuto → Scarica file export
-  # Salva in: docs/wp-exports/01-base-install.xml
-  git add docs/wp-exports/01-base-install.xml
-  git commit -m "chore: WordPress base install checkpoint"
-  ```
+def odoo(model, method, args=None, kwargs=None):
+    from config import ODOO_URL, API_KEY
+    r = requests.post(
+        f"{ODOO_URL}/json/2/{model}/{method}",
+        headers={"Authorization": f"bearer {API_KEY}",
+                 "Content-Type": "application/json"},
+        json={"args": args or [], "kwargs": kwargs or {}}
+    )
+    r.raise_for_status()
+    result = r.json()
+    if "error" in result:
+        raise Exception(result["error"])
+    return result.get("result")
+```
 
 ---
 
-## Task 2: Installa e configura plugin essenziali
+## Task 1: Configurazione base Odoo Website
 
-**Checkpoint:** Tutti i plugin attivi, nessun conflitto, Elementor editor funzionante.
+**Checkpoint:** Website ID noto, lingua EN attiva, logo caricato, API funzionante.
 
-- [ ] **Step 1: Installa Astra Pro**
+- [ ] **Step 1: Recupera Website ID e verifica API**
 
-  Vai in **Aspetto → Temi → Aggiungi nuovo**. Cerca "Astra". Installa e attiva.
-  
-  Poi vai su [wpastra.com](https://wpastra.com) → Download Astra Pro plugin ZIP. Vai in **Plugin → Aggiungi nuovo → Carica plugin**. Carica ZIP. Attiva. Inserisci license key.
+  ```python
+  # scripts/01_setup.py
+  from helpers import odoo
 
-- [ ] **Step 2: Installa Elementor Pro**
+  sites = odoo("website", "search_read",
+      kwargs={"domain": [], "fields": ["id", "name", "domain"], "limit": 5})
+  print(sites)
+  # Nota il valore "id" del sito Debro → WEBSITE_ID in config.py
+  ```
 
-  Vai su [elementor.com](https://elementor.com) → Download Elementor Pro ZIP. **Plugin → Aggiungi nuovo → Carica plugin**. Carica ZIP. Attiva. Inserisci license key e connetti sito.
+- [ ] **Step 2: Verifica permessi utente API**
 
-- [ ] **Step 3: Installa plugin essenziali**
+  In Odoo: **Settings → Users → [tuo utente]**.
+  Verifica che abbia gruppo: `Website / Editor` (o `Website / Designer`).
+  Se mancante: aggiungi manualmente. ⚙️
 
-  Vai in **Plugin → Aggiungi nuovo**. Installa e attiva in sequenza:
-  - `Yoast SEO` (cerca e installa)
-  - `WP Rocket` (ZIP da account wprocket.me → carica manualmente)
-  - `Wordfence Security` (cerca e installa)
-  - `WPForms Lite` (cerca e installa — versione free sufficiente per form contatti)
-  - `Cookie Law Info` (cerca "CookieYes" o "Cookie Law Info" → installa)
+- [ ] **Step 3: Recupera Main Menu ID**
 
-- [ ] **Step 4: Installa WPML**
+  ```python
+  menu = odoo("website.menu", "search_read",
+      kwargs={"domain": [["url", "=", "/default-main-menu"],
+                         ["website_id", "=", WEBSITE_ID]],
+              "fields": ["id", "name"], "limit": 1})
+  print(menu)
+  # Nota "id" → MAIN_MENU_ID in config.py
+  ```
 
-  Vai su [wpml.org](https://wpml.org) → Download WPML Multilingual CMS ZIP. **Plugin → Carica**. Attiva. Wizard setup:
-  - Lingua del sito: Italiano
-  - Aggiungi lingua: English
-  - Directory per traduzione EN: `/en/`
+- [ ] **Step 4: Aggiungi lingua EN** ⚙️
 
-  Installa anche plugin companion: **WPML String Translation** e **WPML Translation Management** (inclusi nel download WPML).
+  In Odoo: **Website → Settings → Languages** → aggiungi `English`.
+  Oppure via API:
 
-- [ ] **Step 5: Verifica nessun conflitto**
+  ```python
+  # Trova ID lingua EN
+  lang = odoo("res.lang", "search_read",
+      kwargs={"domain": [["code", "=", "en_US"]],
+              "fields": ["id", "name"]})
+  lang_id = lang[0]["id"]
 
-  Vai in **Dashboard**. Nessun errore PHP. Elementor editor apribile: vai in **Pagine → Aggiungi nuova → Modifica con Elementor**. Editor carica. Chiudi senza salvare.
+  # Aggiorna website con EN
+  odoo("website", "write",
+      args=[[WEBSITE_ID], {"language_ids": [[4, lang_id]]}])
+  ```
 
-- [ ] **Step 6: Disabilita WP Rocket temporaneamente**
+- [ ] **Step 5: Carica logo Debro**
 
-  Durante sviluppo il caching interferisce. Vai in **WP Rocket → Dashboard** → toggle OFF. Riattiverai a fine build.
+  ```python
+  import base64
 
-- [ ] **Step 7: Checkpoint**
+  with open("Logo Società/Logo Colorato.png", "rb") as f:
+      logo_b64 = base64.b64encode(f.read()).decode()
+
+  odoo("website", "write",
+      args=[[WEBSITE_ID], {"logo": logo_b64}])
+  ```
+
+- [ ] **Step 6: Checkpoint**
 
   ```bash
-  git commit -m "chore: all plugins installed and verified"
+  git add scripts/
+  git commit -m "chore: add Odoo API scripts — Task 1 setup"
   ```
 
 ---
 
-## Task 3: Configura design system globale (Astra + Elementor)
+## Task 2: Design system — CSS globale via API
 
-**Checkpoint:** Palette, font e bottoni globali applicati. Qualsiasi nuova pagina eredita il sistema.
+**Checkpoint:** Inter font attivo, CSS custom properties e componenti dg-* iniettati globalmente.
 
-- [ ] **Step 1: Configura palette globale Elementor**
+- [ ] **Step 1: Imposta palette SCSS** ⚙️
 
-  Vai in **Elementor → Kit del sito → Impostazioni globali → Colori**. Aggiungi:
-  
-  | Nome | Hex |
-  |---|---|
-  | Navy Primary | `#1A3A6B` |
-  | Blue Secondary | `#2A5298` |
-  | Dark Text | `#0D1F3C` |
-  | Slate Body | `#3A4A5C` |
-  | Light BG | `#E8EDF5` |
-  | Off White | `#F8F9FC` |
-  | Accent CTA | `#F5A623` |
+  In Odoo Website Editor: **Customize → Colors**.
+  Imposta Primary: `#1A3A6B`, Secondary: `#2A5298`.
+  Salva. Questo è l'unico step non automatable via API.
 
-  Salva.
+- [ ] **Step 2: Inietta CSS globale via API**
 
-- [ ] **Step 2: Configura font globali Elementor**
+  ```python
+  # scripts/02_design_system.py
+  from helpers import odoo
+  from config import WEBSITE_ID
 
-  Vai in **Elementor → Kit del sito → Impostazioni globali → Font**. Imposta:
-  - Primary font: `Inter` (Google Fonts)
-  - Secondary font: `Inter`
-
-  Vai in **Elementor → Kit del sito → Tipografia globale**:
-  - Body: Inter 400, 17px, line-height 1.6, colore `#3A4A5C`
-  - H1: Inter 800, 48px, line-height 1.15, colore `#0D1F3C`
-  - H2: Inter 700, 32px, line-height 1.25, colore `#1A3A6B`
-  - H3: Inter 700, 22px, colore `#0D1F3C`
-
-  Salva.
-
-- [ ] **Step 3: Configura bottoni globali**
-
-  Vai in **Elementor → Kit del sito → Bottoni**:
-  - Background: `#1A3A6B`
-  - Testo: `#FFFFFF`
-  - Border radius: `4px`
-  - Padding: `10px 20px`
-  - Typography: Inter 700, 14px
-
-  Salva.
-
-- [ ] **Step 4: Configura Astra — Header builder**
-
-  Vai in **Aspetto → Personalizza → Intestazione**. Usa Astra Header Builder:
-  - Riga 1: Logo SX | Menu principale CENTRO | [IT/EN language switcher] + [CTA button] DX
-  - Background header: `#1A3A6B`
-  - Logo: carica `Logo Società/Logo Colorato.png` — imposta altezza 40px
-  - Header sticky: ON
-  - Trasparenza: OFF
-
-- [ ] **Step 5: Crea menu principale**
-
-  Vai in **Aspetto → Menu → Crea nuovo menu** chiamato `Menu principale IT`.
-  Aggiungi voci (pagine ancora da creare — aggiungile come link personalizzati per ora):
-  - Consulting → `#`
-  - Software → `#`
-  - Formazione → `#`
-  - AI → `#`
-
-  Assegna al: `Primary Menu`. Salva.
-
-- [ ] **Step 6: Configura Astra — Footer builder**
-
-  Vai in **Aspetto → Personalizza → Piè di pagina**:
-  - Background: `#0D1F3C`
-  - Riga 1: Colonna SX (logo + P.IVA) | Colonna DX (2 menu widget: Servizi + Contatti)
-  - Riga 2: Copyright centrato — testo: `© 2026 Debro Group. P.IVA [INSERIRE]. Privacy Policy · Cookie Policy`
-
-- [ ] **Step 7: CSS custom globale**
-
-  Vai in **Elementor → Kit del sito → CSS personalizzato**. Incolla:
-
-  ```css
-  /* Card BU — variante chiara */
-  .card-bu-light {
-    background: #ffffff;
-    border-left: 3px solid #1A3A6B;
-    border-radius: 8px;
-    box-shadow: 0 2px 8px rgba(26,58,107,0.07);
-    padding: 1.5rem;
+  CUSTOM_CSS = """
+  <!-- Inter font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <style>
+  body, h1, h2, h3, h4, p, a, button, input, textarea, select {
+    font-family: 'Inter', sans-serif !important;
   }
+  :root {
+    --dg-navy:     #1A3A6B;
+    --dg-blue:     #2A5298;
+    --dg-dark:     #0D1F3C;
+    --dg-slate:    #3A4A5C;
+    --dg-light:    #E8EDF5;
+    --dg-offwhite: #F8F9FC;
+    --dg-accent:   #F5A623;
+  }
+  h1 { font-weight: 800; font-size: clamp(2rem, 4vw, 3rem); line-height: 1.15; color: var(--dg-dark); }
+  h2 { font-weight: 700; font-size: clamp(1.5rem, 3vw, 2rem); line-height: 1.25; color: var(--dg-navy); }
+  h3 { font-weight: 700; font-size: 1.25rem; color: var(--dg-dark); }
+  body { font-size: 17px; line-height: 1.6; color: var(--dg-slate); }
 
-  /* Card BU — variante scura */
-  .card-bu-dark {
-    background: #1A3A6B;
-    border-radius: 8px;
-    box-shadow: 0 2px 12px rgba(26,58,107,0.2);
-    padding: 1.5rem;
-  }
+  .dg-accent-bar { width: 32px; height: 3px; background: var(--dg-accent); border-radius: 2px; margin-bottom: 16px; }
+  .dg-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--dg-navy); margin-bottom: 8px; display: block; }
+  .dg-hero { background: linear-gradient(135deg, var(--dg-dark) 0%, var(--dg-navy) 100%); padding: 80px 0; }
+  .dg-hero h1, .dg-hero p { color: #fff; }
+  .dg-hero .dg-label { color: rgba(255,255,255,.7); }
+  .dg-card-light { background: #fff; border-left: 3px solid var(--dg-navy); border-radius: 8px; box-shadow: 0 2px 8px rgba(26,58,107,.07); padding: 1.5rem; height: 100%; }
+  .dg-card-dark { background: var(--dg-navy); color: #fff; border-radius: 8px; box-shadow: 0 2px 12px rgba(26,58,107,.2); padding: 1.5rem; height: 100%; }
+  .dg-card-dark h3 { color: #fff; }
+  .dg-card-dark p { color: rgba(255,255,255,.75); }
+  .dg-card-dark a { color: var(--dg-accent); font-weight: 700; text-decoration: none; }
+  .dg-card-ai { background: linear-gradient(135deg, var(--dg-dark), var(--dg-navy)); border-radius: 8px; border: 1px solid rgba(245,166,35,.25); padding: 1.5rem; height: 100%; }
+  .btn-dg-accent { background: var(--dg-accent) !important; color: #fff !important; border: none; border-radius: 4px; font-weight: 700; padding: 10px 24px; text-decoration: none; display: inline-block; }
+  .btn-dg-outline { background: transparent !important; border: 2px solid var(--dg-navy) !important; color: var(--dg-navy) !important; border-radius: 4px; font-weight: 700; padding: 9px 22px; text-decoration: none; display: inline-block; }
+  .btn-dg-outline-white { background: transparent !important; border: 2px solid rgba(255,255,255,.6) !important; color: #fff !important; border-radius: 4px; font-weight: 700; padding: 9px 22px; text-decoration: none; display: inline-block; }
+  .dg-client-logo img { filter: grayscale(1); opacity: .55; transition: opacity .2s; max-height: 40px; width: auto; }
+  .dg-client-logo img:hover { opacity: .85; }
+  .dg-section-light { background: var(--dg-offwhite); padding: 80px 0; }
+  .dg-section-white { background: #fff; padding: 80px 0; }
+  .dg-section-navy { background: var(--dg-navy); padding: 80px 0; }
+  .dg-section-navy h2, .dg-section-navy p { color: #fff; }
+  .dg-section-navy h2 { color: #fff; }
+  .text-dg-muted { color: rgba(255,255,255,.65); }
+  </style>
+  """
 
-  /* Bottone CTA accent */
-  .btn-accent {
-    background: #F5A623 !important;
-    color: #ffffff !important;
-    border-radius: 4px;
-    font-weight: 700;
-  }
-
-  /* Bottone outline */
-  .btn-outline {
-    background: transparent !important;
-    border: 2px solid #1A3A6B !important;
-    color: #1A3A6B !important;
-    border-radius: 4px;
-    font-weight: 700;
-  }
-
-  /* Label BU uppercase */
-  .label-bu {
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: #1A3A6B;
-    margin-bottom: 8px;
-    display: block;
-  }
-
-  /* Accent bar */
-  .accent-bar {
-    width: 32px;
-    height: 3px;
-    background: #F5A623;
-    border-radius: 2px;
-    margin-bottom: 16px;
-  }
-
-  /* Sezione clienti — loghi grayscale */
-  .clients-logo img {
-    filter: grayscale(1);
-    opacity: 0.55;
-    transition: opacity 0.2s;
-    max-height: 40px;
-    width: auto;
-  }
-  .clients-logo img:hover {
-    opacity: 0.85;
-  }
+  odoo("website", "write",
+      args=[[WEBSITE_ID], {"custom_code_head": CUSTOM_CSS}])
+  print("Design system iniettato.")
   ```
 
-  Salva.
+  ```bash
+  python scripts/02_design_system.py
+  ```
 
-- [ ] **Step 8: Verifica design system**
+- [ ] **Step 3: Verifica visiva** ⚙️
 
-  Apri qualsiasi pagina in Elementor. Aggiungi un widget Heading — verifica che il font sia Inter. Aggiungi un widget Button — verifica colore navy. Rimuovi e chiudi senza salvare.
+  Apri `debro.it` nel browser. Font Inter attivo. Nessun errore console.
 
-- [ ] **Step 9: Checkpoint**
+- [ ] **Step 4: Checkpoint**
 
   ```bash
-  git commit -m "feat: global design system configured (palette, typography, buttons, header, footer)"
+  git add scripts/02_design_system.py
+  git commit -m "feat: global design system — Inter font, CSS vars, dg-* components"
   ```
 
 ---
 
-## Task 4: Crea template BU (Elementor Template)
+## Task 3: Upload asset (loghi)
 
-**Checkpoint:** Template riutilizzabile salvato in Elementor. Applicabile a tutte le pagine BU.
+**Checkpoint:** Logo Debro e tutti i loghi clienti caricati. Mapping URL salvato in `scripts/assets_map.json`.
 
-- [ ] **Step 1: Crea pagina "Template BU"**
+- [ ] **Step 1: Carica loghi clienti**
 
-  **Pagine → Aggiungi nuova**. Titolo: `[TEMPLATE] BU`. Pubblica. Apri con Elementor.
+  ```python
+  # scripts/03_upload_assets.py
+  import base64, json, os
+  from helpers import odoo
+  from config import WEBSITE_ID
 
-- [ ] **Step 2: Costruisci sezione Hero (Sezione 1)**
+  LOGO_DIR = "Logo Clienti"
+  assets_map = {}
 
-  Aggiungi nuova sezione. Layout: 2 colonne (60% / 40%).
-  
-  Colonna SX:
-  - Widget HTML: `<div class="accent-bar"></div>`
-  - Widget Text: classe CSS `label-bu` — testo: `[NOME BU]`
-  - Widget Heading (H1): testo placeholder `[Headline BU]` — stile da globale
-  - Widget Text: testo placeholder `[Sottotitolo]` — colore `rgba(255,255,255,0.65)`
-  - Widget Button: testo `[CTA primaria]` — classe `btn-accent`
-  - Widget Button: testo `[CTA secondaria]` — classe `btn-outline` — colore bordo/testo bianco
-  
-  Colonna DX:
-  - Widget Inner Section (griglia 2x2) con 4 widget Text per card mini-BU
-  
-  Stile sezione: background gradiente da `#0D1F3C` a `#1A3A6B` (angolo 135°). Padding: 80px 0.
+  for fname in os.listdir(LOGO_DIR):
+      if not fname.lower().endswith((".png", ".jpg", ".svg", ".webp")):
+          continue
+      fpath = os.path.join(LOGO_DIR, fname)
+      with open(fpath, "rb") as f:
+          data = base64.b64encode(f.read()).decode()
+      mime = "image/svg+xml" if fname.endswith(".svg") else f"image/{'jpeg' if fname.endswith('.jpg') else fname.split('.')[-1]}"
+      att_id = odoo("ir.attachment", "create", args=[{
+          "name": fname,
+          "type": "binary",
+          "datas": data,
+          "mimetype": mime,
+          "public": True,
+          "website_id": WEBSITE_ID,
+      }])
+      att = odoo("ir.attachment", "read", args=[[att_id]], kwargs={"fields": ["id", "name"]})
+      url = f"/web/image/{att_id}/{fname}"
+      assets_map[fname] = url
+      print(f"Caricato: {fname} → {url}")
 
-- [ ] **Step 3: Costruisci sezione Approccio (Sezione 2)**
-
-  Aggiungi sezione. Layout: full width. Background: `#FFFFFF`. Padding: 80px 0.
-  
-  - Widget Text: classe `label-bu` — testo `[LABEL SEZIONE]`
-  - Widget Heading (H2): testo `[Titolo approccio]`
-  - Widget Inner Section 2 colonne:
-    - Colonna SX: Inner Section con card (background `#F8F9FC`, border-top 3px `#1A3A6B`, radius 8px)
-    - Colonna DX: stessa struttura
-
-- [ ] **Step 4: Costruisci sezione Specifica (Sezione 3)**
-
-  Aggiungi sezione placeholder. Background: `#E8EDF5`. Padding: 60px 0.
-  - Nota: questa sezione va personalizzata per ogni BU (vedi spec sezione 5)
-  - Placeholder: Widget Heading `[SEZIONE SPECIFICA BU]`
-
-- [ ] **Step 5: Costruisci sezione Progetti (Sezione 4)**
-
-  Aggiungi sezione. Background: `#F8F9FC`. Padding: 80px 0.
-  
-  - Widget Text: classe `label-bu`
-  - Widget Heading (H2): `[Titolo progetti]`
-  
-  Per ogni card progetto (ripeti 3 volte):
-  - Widget Inner Section: 2 colonne (icona 60px | contenuto)
-    - Col SX: Widget Icon Box (icona quadrata navy 36px)
-    - Col DX: Badge status (HTML widget) + Heading H3 + Text + Link
-
-- [ ] **Step 6: Costruisci sezione CTA (Sezione 5)**
-
-  Aggiungi sezione. Background: `#1A3A6B`. Padding: 80px 0. Allineamento: center.
-  - Widget Heading (H2): colore `#FFFFFF`
-  - Widget Text: colore `rgba(255,255,255,0.65)`
-  - Widget Button: classe `btn-accent`
-
-- [ ] **Step 7: Salva come Elementor Template**
-
-  Click **Freccia accanto a "Pubblica"** → **Salva come template**. Nome: `BU Page Template`. Tipo: Pagina.
-
-- [ ] **Step 8: Verifica template salvato**
-
-  Vai in **Elementor → Modelli**. Vedi `BU Page Template` in lista. ✓
-
-- [ ] **Step 9: Checkpoint**
+  with open("scripts/assets_map.json", "w") as f:
+      json.dump(assets_map, f, indent=2)
+  print("Mappa salvata in scripts/assets_map.json")
+  ```
 
   ```bash
-  git commit -m "feat: Elementor BU page template created"
+  python scripts/03_upload_assets.py
+  ```
+
+- [ ] **Step 2: Checkpoint**
+
+  ```bash
+  git add scripts/03_upload_assets.py scripts/assets_map.json
+  git commit -m "chore: upload client logos to Odoo media library"
+  ```
+
+---
+
+## Task 4: Menu principale
+
+**Checkpoint:** Menu con 4 voci BU + Contatti creato. Visibile nella navbar Odoo.
+
+- [ ] **Step 1: Crea menu** (le pagine non esistono ancora — URL placeholder, aggiornati in seguito)
+
+  ```python
+  # scripts/04_menu.py
+  from helpers import odoo
+  from config import WEBSITE_ID, MAIN_MENU_ID
+
+  voci = [
+      {"name": "Consulting",  "url": "/consulting/",  "sequence": 10},
+      {"name": "Software",    "url": "/software/",    "sequence": 20},
+      {"name": "Formazione",  "url": "/formazione/",  "sequence": 30},
+      {"name": "AI",          "url": "/ai/",          "sequence": 40},
+      {"name": "Contatti",    "url": "/contatti/",    "sequence": 50},
+  ]
+
+  for v in voci:
+      mid = odoo("website.menu", "create", args=[{
+          **v,
+          "parent_id": MAIN_MENU_ID,
+          "website_id": WEBSITE_ID,
+      }])
+      print(f"Menu creato: {v['name']} (id {mid})")
+  ```
+
+  ```bash
+  python scripts/04_menu.py
+  ```
+
+- [ ] **Step 2: Checkpoint**
+
+  ```bash
+  git add scripts/04_menu.py
+  git commit -m "feat: main menu structure created via API"
   ```
 
 ---
 
 ## Task 5: Homepage
 
-**Checkpoint:** Homepage pubblicata con tutte le sezioni, navigazione funzionante.
+**Checkpoint:** `debro.it/` pubblica con tutte le 5 sezioni, responsive.
 
 - [ ] **Step 1: Crea pagina Homepage**
 
-  **Pagine → Aggiungi nuova**. Titolo: `Homepage`. Attributi pagina → Template: `Elementor Canvas`. Pubblica. Apri con Elementor.
+  ```python
+  # scripts/05_homepage.py
+  import json
+  from helpers import odoo
+  from config import WEBSITE_ID
 
-- [ ] **Step 2: Imposta come homepage**
+  with open("scripts/assets_map.json") as f:
+      assets = json.load(f)
 
-  **Impostazioni → Lettura**:
-  - La prima pagina mostra: Una pagina statica
-  - Prima pagina: `Homepage`
-  - Salva.
+  ARCH = """<t t-name="custom.page_homepage">
+    <t t-call="website.layout">
+      <div id="wrap" class="oe_structure">
 
-- [ ] **Step 3: Sezione 1 — Hero split**
+        <!-- SEZIONE 1: Hero -->
+        <section class="dg-hero">
+          <div class="container">
+            <div class="row align-items-center g-5">
+              <div class="col-lg-6">
+                <div class="dg-accent-bar"></div>
+                <h1>Un gruppo. Quattro specializzazioni. Zero improvvisazione.</h1>
+                <p class="fs-5 mt-3 mb-4 text-dg-muted">Consulenza, software, formazione e AI per le PMI italiane che fanno sul serio.</p>
+                <div class="d-flex gap-3 flex-wrap">
+                  <a href="#bu-section" class="btn-dg-accent">Scopri il Gruppo</a>
+                  <a href="/contatti/" class="btn-dg-outline-white">Contattaci</a>
+                </div>
+              </div>
+              <div class="col-lg-6">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                  <div style="background:rgba(255,255,255,.08);border-radius:8px;padding:16px;text-align:center;">
+                    <div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.9);margin-bottom:4px;">Consulting</div>
+                    <div style="font-size:11px;color:rgba(255,255,255,.5);">ISO · ACN · Normative</div>
+                  </div>
+                  <div style="background:rgba(255,255,255,.08);border-radius:8px;padding:16px;text-align:center;">
+                    <div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.9);margin-bottom:4px;">Software</div>
+                    <div style="font-size:11px;color:rgba(255,255,255,.5);">Custom · ICT · Cloud</div>
+                  </div>
+                  <div style="background:rgba(255,255,255,.08);border-radius:8px;padding:16px;text-align:center;">
+                    <div style="font-size:12px;font-weight:700;color:rgba(255,255,255,.9);margin-bottom:4px;">Formazione</div>
+                    <div style="font-size:11px;color:rgba(255,255,255,.5);">81/08 · ICT · Mgmt</div>
+                  </div>
+                  <div style="background:rgba(255,255,255,.12);border-radius:8px;padding:16px;text-align:center;border:1px solid rgba(245,166,35,.4);">
+                    <div style="font-size:12px;font-weight:700;color:#F5A623;margin-bottom:4px;">Debro AI</div>
+                    <div style="font-size:11px;color:rgba(255,255,255,.5);">Processi · Dati · PMI</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
 
-  Sezione 2 colonne (50/50). Background gradiente `#0D1F3C → #1A3A6B` (135°). Min-height: 600px.
-  
-  Colonna SX (padding 60px):
-  - HTML: `<div class="accent-bar"></div>`
-  - Heading H1: `Un gruppo. Quattro specializzazioni. Zero improvvisazione.` — Inter 800, bianco
-  - Text: `Consulenza, software, formazione e AI per le PMI italiane che fanno sul serio.` — rgba(255,255,255,0.65)
-  - Button row (widget Button x2):
-    - Button 1: `Scopri il Gruppo` — classe `btn-accent` — ancora `#bu-section`
-    - Button 2: `Contattaci` — classe `btn-outline` — link `/contatti/`
-  
-  Colonna DX: Inner Section 2x2 con 4 mini-card semitrasparenti (HTML widget):
-  ```html
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:20px;">
-    <div style="background:rgba(255,255,255,0.08);border-radius:8px;padding:16px;text-align:center;">
-      <div style="font-size:12px;font-weight:700;color:rgba(255,255,255,0.9);margin-bottom:4px;">Consulting</div>
-      <div style="font-size:11px;color:rgba(255,255,255,0.5);">ISO · ACN · Normative</div>
-    </div>
-    <div style="background:rgba(255,255,255,0.08);border-radius:8px;padding:16px;text-align:center;">
-      <div style="font-size:12px;font-weight:700;color:rgba(255,255,255,0.9);margin-bottom:4px;">Software</div>
-      <div style="font-size:11px;color:rgba(255,255,255,0.5);">Custom · ICT · Cloud</div>
-    </div>
-    <div style="background:rgba(255,255,255,0.08);border-radius:8px;padding:16px;text-align:center;">
-      <div style="font-size:12px;font-weight:700;color:rgba(255,255,255,0.9);margin-bottom:4px;">Formazione</div>
-      <div style="font-size:11px;color:rgba(255,255,255,0.5);">81/08 · ICT · Mgmt</div>
-    </div>
-    <div style="background:rgba(255,255,255,0.12);border-radius:8px;padding:16px;text-align:center;border:1px solid rgba(245,166,35,0.4);">
-      <div style="font-size:12px;font-weight:700;color:#F5A623;margin-bottom:4px;">Debro AI</div>
-      <div style="font-size:11px;color:rgba(255,255,255,0.5);">Processi · Dati · PMI</div>
-    </div>
-  </div>
+        <!-- SEZIONE 2: Chi siamo -->
+        <section class="dg-section-white">
+          <div class="container">
+            <div class="row align-items-center g-5">
+              <div class="col-lg-7">
+                <span class="dg-label">Chi siamo</span>
+                <h2>Non siamo un&#39;agenzia tuttofare. Siamo un gruppo che sa cosa fa.</h2>
+                <p class="mt-3">Debro è un ecosistema di competenze: consulenza organizzativa, sviluppo software, formazione professionale e AI applicata. Quattro realtà specializzate, un unico obiettivo — generare valore concreto per chi ci sceglie.</p>
+              </div>
+              <div class="col-lg-5">
+                <div class="d-flex flex-column gap-3">
+                  <div style="background:var(--dg-light);border-radius:6px;padding:12px 16px;font-weight:600;color:var(--dg-dark);">✓ Competenze reali, non slide</div>
+                  <div style="background:var(--dg-light);border-radius:6px;padding:12px 16px;font-weight:600;color:var(--dg-dark);">✓ Un solo interlocutore per 4 aree</div>
+                  <div style="background:var(--dg-light);border-radius:6px;padding:12px 16px;font-weight:600;color:var(--dg-dark);">✓ Target: PMI e PA italiane</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- SEZIONE 3: Le 4 BU -->
+        <section class="dg-section-light" id="bu-section">
+          <div class="container">
+            <span class="dg-label">Le nostre aree</span>
+            <h2>Quattro specializzazioni. Un gruppo.</h2>
+            <div class="row row-cols-1 row-cols-md-2 g-4 mt-3">
+              <div class="col">
+                <div class="dg-card-light">
+                  <span class="dg-label">Consulting</span>
+                  <h3>La normativa non aspetta.</h3>
+                  <p>ISO, ACN, sistemi di gestione, D.Lgs. 36/2023.</p>
+                  <a href="/consulting/" style="color:var(--dg-navy);font-weight:700;text-decoration:none;">Scopri →</a>
+                </div>
+              </div>
+              <div class="col">
+                <div class="dg-card-dark">
+                  <span class="dg-label" style="color:rgba(255,255,255,.6);">Software</span>
+                  <h3>Codice che va in produzione.</h3>
+                  <p>Software custom, consulenza ICT, ARCASID.</p>
+                  <a href="/software/">Scopri →</a>
+                </div>
+              </div>
+              <div class="col">
+                <div class="dg-card-light">
+                  <span class="dg-label">Formazione</span>
+                  <h3>Formazione obbligatoria. Non inutile.</h3>
+                  <p>81/08, ICT &amp; Digital Skills, Management.</p>
+                  <a href="/formazione/" style="color:var(--dg-navy);font-weight:700;text-decoration:none;">Scopri →</a>
+                </div>
+              </div>
+              <div class="col">
+                <div class="dg-card-ai">
+                  <span class="dg-label" style="color:#F5A623;">Debro AI</span>
+                  <h3 style="color:#fff;">L&#39;AI che lavora.<br/>Nei tuoi processi.</h3>
+                  <p style="color:rgba(255,255,255,.65);">Automazione, analisi e assistenti AI su misura. Nessuna demo. Solo risultati misurabili.</p>
+                  <a href="/ai/" style="color:#F5A623;font-weight:700;text-decoration:none;">Scopri →</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- SEZIONE 4: Clienti -->
+        <section class="dg-section-white">
+          <div class="container text-center">
+            <span class="dg-label">Ci hanno scelto</span>
+            <div class="d-flex flex-wrap gap-5 justify-content-center align-items-center mt-4">
+              <div class="dg-client-logo"><img src="/web/image/LOGO_BICOCCA_ID/logo-bicocca.png" alt="Università Milano Bicocca"/></div>
+              <div class="dg-client-logo"><img src="/web/image/LOGO_SIELTE_ID/logo-sielte.png" alt="Sielte"/></div>
+              <div class="dg-client-logo"><img src="/web/image/LOGO_MET_ID/logo-met.png" alt="Met Italia"/></div>
+              <div class="dg-client-logo"><img src="/web/image/LOGO_LEGAMBIENTE_ID/logo-legambiente.png" alt="Legambiente"/></div>
+              <div class="dg-client-logo"><img src="/web/image/LOGO_UNIPV_ID/logo-unipv.png" alt="Università di Pavia"/></div>
+              <div class="dg-client-logo"><img src="/web/image/LOGO_UNIROMA2_ID/logo-uniroma2.png" alt="Università Roma Tor Vergata"/></div>
+              <div class="dg-client-logo"><img src="/web/image/LOGO_BEON_ID/logo-beon.png" alt="Beon"/></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- SEZIONE 5: CTA finale -->
+        <section class="dg-section-light text-center">
+          <div class="container">
+            <h2>Parliamo del tuo progetto.</h2>
+            <p class="mt-3 mb-4">Un&#39;analisi iniziale è gratuita e senza impegno. Scopri quale area Debro fa per te.</p>
+            <a href="/contatti/" class="btn-dg-accent">Contattaci ora</a>
+          </div>
+        </section>
+
+      </div>
+    </t>
+  </t>"""
+
+  page_id = odoo("website.page", "create", args=[{
+      "name": "Homepage",
+      "type": "qweb",
+      "key": "custom.page_homepage",
+      "url": "/homepage-debro",   # Odoo riserva "/" — verrà impostato come homepage dalle impostazioni
+      "website_id": WEBSITE_ID,
+      "is_published": True,
+      "website_indexed": True,
+      "website_meta_title": "Debro Group · Consulting, Software, Formazione e AI per PMI",
+      "website_meta_description": "Debro è un gruppo di competenze specializzate: consulenza normativa, sviluppo software, formazione professionale e AI applicata per le PMI italiane.",
+      "arch": ARCH,
+  }])
+  print(f"Homepage creata: id {page_id}")
   ```
 
-- [ ] **Step 4: Sezione 2 — Chi siamo**
+  > **Nota URL homepage:** Odoo gestisce `/` come homepage dal modulo website. Dopo la creazione:
+  > ⚙️ Vai in **Website → Settings → Homepage** e seleziona questa pagina.
 
-  Sezione 2 colonne (60/40). Background: `#FFFFFF`. Padding: 80px 0.
-  
-  Colonna SX:
-  - Text (classe `label-bu`): `Chi siamo`
-  - Heading H2: `Non siamo un'agenzia tuttofare. Siamo un gruppo che sa cosa fa.`
-  - Text: `Debro è un ecosistema di competenze: consulenza organizzativa, sviluppo software, formazione professionale e AI applicata. Quattro realtà specializzate, un unico obiettivo — generare valore concreto per chi ci sceglie.`
-  
-  Colonna DX: 3 widget Icon List con sfondo `#E8EDF5`, radius 6px, padding 10px:
-  - `Competenze reali, non slide`
-  - `Un solo interlocutore per 4 aree`
-  - `Target: PMI e PA italiane`
+- [ ] **Step 2: Sostituisci URL loghi clienti**
 
-- [ ] **Step 5: Sezione 3 — 4 BU cards**
+  Apri `scripts/assets_map.json`. Per ogni logo cliente, sostituisci i placeholder `LOGO_*_ID` nel template con gli ID reali restituiti da Task 3.
 
-  Sezione full width. Background: `#F8F9FC`. Padding: 80px 0. ID: `bu-section`.
-  
-  - Text (label): `Le nostre aree`
-  - Heading H2: `Quattro specializzazioni. Un gruppo.`
-  - Inner Section 2x2 grid (usa widget Inner Section anidato):
-
-  Card Consulting (classe `card-bu-light`):
-  - Text label: `Consulting`
-  - Heading H3: `La normativa non aspetta.`
-  - Text: `ISO, ACN, sistemi di gestione, D.Lgs. 36/2023.`
-  - Link text: `Scopri →` → link `/consulting/`
-
-  Card Software (classe `card-bu-dark`):
-  - Text label (colore rgba(255,255,255,0.6)): `Software`
-  - Heading H3 (bianco): `Codice che va in produzione.`
-  - Text (rgba(255,255,255,0.7)): `Software custom, consulenza ICT, ARCASID.`
-  - Link (colore `#F5A623`): `Scopri →` → link `/software/`
-
-  Card Formazione (classe `card-bu-light`):
-  - Text label: `Formazione`
-  - Heading H3: `Formazione obbligatoria. Non inutile.`
-  - Text: `81/08, ICT & Digital Skills, Management.`
-  - Link: `Scopri →` → link `/formazione/`
-
-  Card AI (HTML widget — card con bordo accent):
-  ```html
-  <div style="background:linear-gradient(135deg,#0D1F3C,#1A3A6B);border-radius:8px;padding:1.5rem;border:1px solid rgba(245,166,35,0.25);position:relative;overflow:hidden;">
-    <span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#F5A623;display:block;margin-bottom:8px;">Debro AI</span>
-    <h3 style="font-size:18px;font-weight:700;color:#fff;margin-bottom:8px;line-height:1.3;">L'AI che lavora.<br>Nei tuoi processi.</h3>
-    <p style="font-size:14px;color:rgba(255,255,255,0.65);line-height:1.5;margin-bottom:12px;">Automazione, analisi e assistenti AI su misura. Nessuna demo. Solo risultati misurabili.</p>
-    <a href="/ai/" style="font-size:13px;color:#F5A623;font-weight:700;text-decoration:none;">Scopri →</a>
-  </div>
-  ```
-
-- [ ] **Step 6: Sezione 4 — Loghi clienti**
-
-  Sezione full width. Background: `#FFFFFF`. Padding: 60px 0.
-  
-  - Text (label centrato): `Ci hanno scelto`
-  - Image Gallery o riga di widget Image: carica tutti i loghi da `Logo Clienti/`. Per ogni immagine:
-    - Classe CSS: `clients-logo`
-    - Alt text: nome cliente
-    - Link: nessuno
-    - Dimensione: custom height 40px, width auto
-
-  Loghi da caricare su WordPress Media Library: `logo-bicocca.png`, `logo-sielte.png`, `logo-met.png`, `logo-legambiente.png`, `logo-unipv.png`, `logo-uniroma2.png`, `logo-beon.png`
-
-- [ ] **Step 7: Sezione 5 — CTA finale**
-
-  Sezione full width. Background: `#F8F9FC`. Padding: 80px 0. Allineamento: center.
-  - Heading H2: `Parliamo del tuo progetto.`
-  - Text: `Un'analisi iniziale è gratuita e senza impegno. Scopri quale area Debro fa per te.`
-  - Button: `Contattaci ora` — classe `btn-accent` — link `/contatti/`
-
-- [ ] **Step 8: Pubblica e verifica**
-
-  Click **Pubblica**. Apri `debro.it` nel browser. Verifica:
-  - [ ] Hero visibile e testo corretto
-  - [ ] 4 card BU cliccabili (link placeholder ok per ora)
-  - [ ] Loghi clienti visibili in grayscale
-  - [ ] CTA funzionante
-  - [ ] Responsive mobile (DevTools → iPhone 12)
-
-- [ ] **Step 9: Checkpoint**
+- [ ] **Step 3: Esegui script**
 
   ```bash
-  git commit -m "feat: homepage complete"
+  cd scripts && python 05_homepage.py
+  ```
+
+- [ ] **Step 4: Verifica** ⚙️
+
+  Apri `debro.it` nel browser. Tutte le 5 sezioni visibili. Mobile responsive (DevTools → iPhone 12).
+
+- [ ] **Step 5: Checkpoint**
+
+  ```bash
+  git add scripts/05_homepage.py
+  git commit -m "feat: homepage created via Odoo API"
   ```
 
 ---
 
 ## Task 6: Pagina Debro Consulting
 
-**Checkpoint:** Pagina `/consulting/` pubblicata con hero, 4 servizi, progetti, CTA.
+**Checkpoint:** `/consulting/` pubblica con hero, 4 servizi, 3 progetti, CTA.
 
 - [ ] **Step 1: Crea pagina**
 
-  **Pagine → Aggiungi nuova**. Titolo: `Consulting`. Slug: `consulting`. Template: `Elementor Canvas`. Pubblica. Apri con Elementor.
+  ```python
+  # scripts/06_consulting.py
+  from helpers import odoo
+  from config import WEBSITE_ID
 
-- [ ] **Step 2: Importa template BU**
+  ARCH = """<t t-name="custom.page_consulting">
+    <t t-call="website.layout">
+      <div id="wrap" class="oe_structure">
 
-  Click **icona cartella** (Aggiungi template) → **I miei template** → `BU Page Template` → Inserisci. Template importato.
+        <!-- Hero -->
+        <section class="dg-hero">
+          <div class="container">
+            <div class="row align-items-center g-5">
+              <div class="col-lg-7">
+                <div class="dg-accent-bar"></div>
+                <span class="dg-label" style="color:rgba(255,255,255,.7);">Consulting</span>
+                <h1>La normativa non aspetta. Noi siamo già pronti.</h1>
+                <p class="fs-5 mt-3 mb-4 text-dg-muted">Sistemi di gestione, compliance ACN e certificazioni ISO per aziende che non vogliono essere colte impreparate.</p>
+                <div class="d-flex gap-3 flex-wrap">
+                  <a href="/contatti/?area=consulting" class="btn-dg-accent">Parliamo della tua situazione</a>
+                  <a href="#servizi" class="btn-dg-outline-white">I nostri servizi →</a>
+                </div>
+              </div>
+              <div class="col-lg-5">
+                <div class="d-flex flex-column gap-2">
+                  <div style="background:rgba(255,255,255,.08);border-radius:6px;padding:10px 14px;font-size:12px;color:rgba(255,255,255,.85);border-left:2px solid #F5A623;">ISO 9001 · 27001 · 45001</div>
+                  <div style="background:rgba(255,255,255,.08);border-radius:6px;padding:10px 14px;font-size:12px;color:rgba(255,255,255,.85);border-left:2px solid rgba(255,255,255,.2);">Accreditamento ACN</div>
+                  <div style="background:rgba(255,255,255,.08);border-radius:6px;padding:10px 14px;font-size:12px;color:rgba(255,255,255,.85);border-left:2px solid rgba(255,255,255,.2);">D.Lgs. 36/2023</div>
+                  <div style="background:rgba(255,255,255,.08);border-radius:6px;padding:10px 14px;font-size:12px;color:rgba(255,255,255,.85);border-left:2px solid rgba(255,255,255,.2);">Piattaforme PAD</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
 
-- [ ] **Step 3: Personalizza Hero**
+        <!-- Servizi -->
+        <section class="dg-section-white" id="servizi">
+          <div class="container">
+            <span class="dg-label">Cosa facciamo</span>
+            <h2>Trasformiamo la complessità normativa in vantaggio competitivo.</h2>
+            <div class="row row-cols-1 row-cols-md-2 g-4 mt-3">
+              <div class="col"><div class="dg-card-light">
+                <h3>Sistemi di gestione</h3>
+                <p>Progettiamo sistemi integrati (qualità, sicurezza, ambiente) adattati alla struttura reale dell&#39;organizzazione, non a template standard.</p>
+              </div></div>
+              <div class="col"><div class="dg-card-light">
+                <h3>Accreditamento ACN</h3>
+                <p>Percorso completo: analisi del gap, documentazione, affiancamento nei processi di verifica presso l&#39;Agenzia per la Cybersicurezza Nazionale.</p>
+              </div></div>
+              <div class="col"><div class="dg-card-light">
+                <h3>Normative ISO</h3>
+                <p>ISO 9001, 27001, 45001. Dalla gap analysis alla certificazione, fino al mantenimento nel tempo.</p>
+              </div></div>
+              <div class="col"><div class="dg-card-light">
+                <h3>Codice Contratti &amp; PAD</h3>
+                <p>Recepimento D.Lgs. 36/2023 e supporto adozione Piattaforme di Approvvigionamento Digitale per stazioni appaltanti e operatori economici.</p>
+              </div></div>
+            </div>
+          </div>
+        </section>
 
-  - Label: `Consulting`
-  - H1: `La normativa non aspetta. Noi siamo già pronti.`
-  - Sottotitolo: `Sistemi di gestione, compliance ACN e certificazioni ISO per aziende che non vogliono essere colte impreparate.`
-  - CTA primaria: `Parliamo della tua situazione` → link `/contatti/?area=consulting`
-  - CTA secondaria: `I nostri servizi →` → ancora `#servizi`
-  - Visual DX: 4 card con servizi (HTML):
-  ```html
-  <div style="display:flex;flex-direction:column;gap:8px;padding:20px;">
-    <div style="background:rgba(255,255,255,0.08);border-radius:6px;padding:10px 14px;font-size:12px;color:rgba(255,255,255,0.85);border-left:2px solid #F5A623;">ISO 9001 · 27001 · 45001</div>
-    <div style="background:rgba(255,255,255,0.08);border-radius:6px;padding:10px 14px;font-size:12px;color:rgba(255,255,255,0.85);border-left:2px solid rgba(255,255,255,0.2);">Accreditamento ACN</div>
-    <div style="background:rgba(255,255,255,0.08);border-radius:6px;padding:10px 14px;font-size:12px;color:rgba(255,255,255,0.85);border-left:2px solid rgba(255,255,255,0.2);">D.Lgs. 36/2023</div>
-    <div style="background:rgba(255,255,255,0.08);border-radius:6px;padding:10px 14px;font-size:12px;color:rgba(255,255,255,0.85);border-left:2px solid rgba(255,255,255,0.2);">Piattaforme PAD</div>
-  </div>
+        <!-- Progetti -->
+        <section class="dg-section-light">
+          <div class="container">
+            <span class="dg-label">Progetti realizzati</span>
+            <h2>Tre casi concreti.</h2>
+            <div class="d-flex flex-column gap-4 mt-4">
+              <div class="dg-card-light"><h3>Supporto Università</h3><p>Gestione documentale e processi di accreditamento per importanti atenei italiani, con digitalizzazione delle Scuole di Specializzazione.</p></div>
+              <div class="dg-card-light"><h3>Piattaforme PAD</h3><p>Gestione adozione Piattaforme di Approvvigionamento Digitale per centrali di committenza con formazione e supervisione.</p></div>
+              <div class="dg-card-light"><h3>D.Lgs 36/2023</h3><p>Consulenza per recepimento nuovo Codice Contratti Pubblici: procedure, modelli e strumenti di compliance.</p></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- CTA -->
+        <section class="dg-section-navy text-center">
+          <div class="container">
+            <h2 style="color:#fff;">Parliamo della tua situazione.</h2>
+            <p class="mt-3 mb-4 text-dg-muted">Prima call gratuita. Nessun impegno. Solo una conversazione concreta.</p>
+            <a href="/contatti/?area=consulting" class="btn-dg-accent">Contattaci →</a>
+          </div>
+        </section>
+
+      </div>
+    </t>
+  </t>"""
+
+  page_id = odoo("website.page", "create", args=[{
+      "name": "Debro Consulting",
+      "type": "qweb",
+      "key": "custom.page_consulting",
+      "url": "/consulting/",
+      "website_id": WEBSITE_ID,
+      "is_published": True,
+      "website_indexed": True,
+      "website_meta_title": "Debro Consulting · ISO, ACN, Sistemi di Gestione",
+      "website_meta_description": "Sistemi di gestione, accreditamento ACN e normative ISO per aziende che non vogliono essere colte impreparate.",
+      "arch": ARCH,
+  }])
+  print(f"Consulting creata: id {page_id}")
   ```
 
-- [ ] **Step 4: Personalizza Sezione Approccio → Sezione Servizi**
+  ```bash
+  python scripts/06_consulting.py
+  ```
 
-  ID sezione: `servizi`. Label: `Cosa facciamo`. H2: `Trasformiamo la complessità normativa in vantaggio competitivo.`
-  
-  4 card servizio (grid 2x2):
-  - **Sistemi di gestione** — `Progettiamo sistemi integrati (qualità, sicurezza, ambiente) adattati alla struttura reale dell'organizzazione, non a template standard.`
-  - **Accreditamento ACN** — `Percorso completo: analisi del gap, documentazione, affiancamento nei processi di verifica presso l'Agenzia per la Cybersicurezza Nazionale.`
-  - **Normative ISO** — `ISO 9001, 27001, 45001. Dalla gap analysis alla certificazione, fino al mantenimento nel tempo.`
-  - **Codice Contratti & PAD** — `Recepimento D.Lgs. 36/2023 e supporto adozione Piattaforme di Approvvigionamento Digitale per stazioni appaltanti e operatori economici.`
+- [ ] **Step 2: Verifica** ⚙️ — apri `debro.it/consulting/`, tutte le sezioni visibili.
 
-- [ ] **Step 5: Sostituisci Sezione Specifica → Sezione Progetti**
-
-  Label: `Progetti realizzati`. H2: `Tre casi concreti.`
-  
-  3 card orizzontali:
-  - **Supporto Università** — `Gestione documentale e processi di accreditamento per importanti atenei italiani, con digitalizzazione delle Scuole di Specializzazione.`
-  - **Piattaforme PAD** — `Gestione adozione Piattaforme di Approvvigionamento Digitale per centrali di committenza con formazione e supervisione.`
-  - **D.Lgs 36/2023** — `Consulenza per recepimento nuovo Codice Contratti Pubblici: procedure, modelli e strumenti di compliance.`
-
-- [ ] **Step 6: CTA**
-
-  H2: `Parliamo della tua situazione.`
-  Text: `Prima call gratuita. Nessun impegno. Solo una conversazione concreta.`
-  Button: `Contattaci →` → `/contatti/?area=consulting`
-
-- [ ] **Step 7: Aggiorna menu**
-
-  **Aspetto → Menu**. Modifica voce "Consulting" — cambia link placeholder con URL `/consulting/`. Salva.
-
-- [ ] **Step 8: Verifica**
-
-  Apri `debro.it/consulting/`. Tutte le sezioni visibili. Click CTA → va a `/contatti/` (pagina ancora da creare, 404 ok per ora). ✓
-
-- [ ] **Step 9: Checkpoint**
+- [ ] **Step 3: Checkpoint**
 
   ```bash
-  git commit -m "feat: Debro Consulting page complete"
+  git add scripts/06_consulting.py
+  git commit -m "feat: Debro Consulting page via Odoo API"
   ```
 
 ---
 
 ## Task 7: Pagina Debro Software
 
-**Checkpoint:** Pagina `/software/` pubblicata con hero, approccio, stack, 3 progetti, CTA.
+**Checkpoint:** `/software/` con hero, approccio, stack pill, 3 progetti con badge.
 
 - [ ] **Step 1: Crea pagina**
 
-  Stessa procedura Task 6 Step 1. Titolo: `Software`. Slug: `software`.
+  ```python
+  # scripts/07_software.py
+  from helpers import odoo
+  from config import WEBSITE_ID
 
-- [ ] **Step 2: Importa template BU e personalizza Hero**
+  STACK_TAGS = ["React","Node.js","Python","Java Spring Boot","AWS","Azure","GCP","Docker","PostgreSQL","MongoDB","ChatGPT API","GDPR · OWASP"]
 
-  - Label: `Software`
-  - H1: `Software che va in produzione. Non solo in presentazione.`
-  - Sottotitolo: `Sviluppo custom e consulenza ICT per chi ha bisogno di soluzioni che funzionano davvero nell'ambiente reale.`
-  - CTA primaria: `Raccontaci il tuo progetto` → `/contatti/?area=software`
-  - CTA secondaria: `Vedi i progetti →` → ancora `#progetti`
-  - Visual DX: lista stack (HTML — vedi wireframe bu-template.html)
+  def pill(label, color="var(--dg-navy)"):
+      return f'<span style="background:{color};color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;font-weight:600;">{label}</span>'
 
-- [ ] **Step 3: Sezione Approccio**
+  stack_html = "".join(pill(t) for t in STACK_TAGS)
 
-  Label: `Come lavoriamo`. H2: `Entriamo nei team. Capiamo i processi. Scriviamo codice.`
-  
-  2 card:
-  - **Consulenza integrata** — `I nostri professionisti si affiancano ai team interni: cloud, microservizi, sicurezza applicativa, integrazione sistemi. Competenze reali, non slide.`
-  - **Sviluppo end-to-end** — `Analisi dei requisiti, progettazione, sviluppo iterativo, test, deployment e supporto post-rilascio. Un ciclo completo, senza buchi di responsabilità.`
+  colors = {"var(--dg-navy)": STACK_TAGS[:4], "#2A5298": STACK_TAGS[4:8], "#455a7a": STACK_TAGS[8:]}
+  stack_html = ""
+  for color, tags in [("var(--dg-navy)", STACK_TAGS[:4]), ("#2A5298", STACK_TAGS[4:8]), ("#455a7a", STACK_TAGS[8:])]:
+      for t in tags:
+          stack_html += pill(t, color)
 
-- [ ] **Step 4: Sezione Stack tecnologico**
+  ARCH = f"""<t t-name="custom.page_software">
+    <t t-call="website.layout">
+      <div id="wrap" class="oe_structure">
 
-  Background: `#E8EDF5`. Label: `Stack tecnologico`. Usa widget HTML:
-  ```html
-  <div style="display:flex;gap:8px;flex-wrap:wrap;">
-    <span style="background:#1A3A6B;color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;font-weight:600;">React</span>
-    <span style="background:#1A3A6B;color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;font-weight:600;">Node.js</span>
-    <span style="background:#1A3A6B;color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;font-weight:600;">Python</span>
-    <span style="background:#1A3A6B;color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;font-weight:600;">Java Spring Boot</span>
-    <span style="background:#2A5298;color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;font-weight:600;">AWS</span>
-    <span style="background:#2A5298;color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;font-weight:600;">Azure</span>
-    <span style="background:#2A5298;color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;font-weight:600;">GCP</span>
-    <span style="background:#2A5298;color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;font-weight:600;">Docker</span>
-    <span style="background:#455a7a;color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;font-weight:600;">PostgreSQL</span>
-    <span style="background:#455a7a;color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;font-weight:600;">MongoDB</span>
-    <span style="background:#455a7a;color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;font-weight:600;">ChatGPT API</span>
-    <span style="background:#455a7a;color:#fff;font-size:12px;padding:4px 12px;border-radius:20px;font-weight:600;">GDPR · OWASP</span>
-  </div>
+        <section class="dg-hero">
+          <div class="container">
+            <div class="row align-items-center g-5">
+              <div class="col-lg-7">
+                <div class="dg-accent-bar"></div>
+                <span class="dg-label" style="color:rgba(255,255,255,.7);">Software</span>
+                <h1>Software che va in produzione. Non solo in presentazione.</h1>
+                <p class="fs-5 mt-3 mb-4 text-dg-muted">Sviluppo custom e consulenza ICT per chi ha bisogno di soluzioni che funzionano davvero nell&#39;ambiente reale.</p>
+                <div class="d-flex gap-3 flex-wrap">
+                  <a href="/contatti/?area=software" class="btn-dg-accent">Raccontaci il tuo progetto</a>
+                  <a href="#progetti" class="btn-dg-outline-white">Vedi i progetti →</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="dg-section-white">
+          <div class="container">
+            <span class="dg-label">Come lavoriamo</span>
+            <h2>Entriamo nei team. Capiamo i processi. Scriviamo codice.</h2>
+            <div class="row row-cols-1 row-cols-md-2 g-4 mt-3">
+              <div class="col"><div class="dg-card-light">
+                <h3>Consulenza integrata</h3>
+                <p>I nostri professionisti si affiancano ai team interni: cloud, microservizi, sicurezza applicativa, integrazione sistemi. Competenze reali, non slide.</p>
+              </div></div>
+              <div class="col"><div class="dg-card-light">
+                <h3>Sviluppo end-to-end</h3>
+                <p>Analisi dei requisiti, progettazione, sviluppo iterativo, test, deployment e supporto post-rilascio. Un ciclo completo, senza buchi di responsabilità.</p>
+              </div></div>
+            </div>
+          </div>
+        </section>
+
+        <section style="background:var(--dg-light);padding:60px 0;">
+          <div class="container">
+            <span class="dg-label">Stack tecnologico</span>
+            <div class="d-flex gap-2 flex-wrap mt-3">{stack_html}</div>
+          </div>
+        </section>
+
+        <section class="dg-section-white" id="progetti">
+          <div class="container">
+            <span class="dg-label">Progetti realizzati</span>
+            <h2>In produzione, non in demo.</h2>
+            <div class="d-flex flex-column gap-4 mt-4">
+
+              <div class="dg-card-light">
+                <span style="background:#e8f5e9;color:#2e7d32;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;">In produzione</span>
+                <h3 class="mt-2">ARCASID — Digital Logbook</h3>
+                <p>Il primo sistema digitale per tirocini universitari. LogBook digitale, segreteria intelligente, Diploma Supplement automatico. Integrato con ESSE3/Cineca, SPID e SSO (Shibboleth, Microsoft SAML).</p>
+                <small style="color:var(--dg-slate);">Università degli Studi di Milano Bicocca · arcasid.it</small>
+              </div>
+
+              <div class="dg-card-light">
+                <span style="background:#e3f2fd;color:#1565c0;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;">In sviluppo</span>
+                <h3 class="mt-2">BInclusion</h3>
+                <p>L&#39;inclusione non si dichiara. Si misura. Piattaforma per gestione e monitoraggio dei percorsi di inclusione con strumenti operativi e dati reali per le decisioni.</p>
+              </div>
+
+              <div class="dg-card-light">
+                <span style="background:#e8f5e9;color:#2e7d32;font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;">In produzione</span>
+                <h3 class="mt-2">MedData — Ricerca Clinica</h3>
+                <p>Piattaforma cloud per raccolta dati clinici standardizzati: questionari strutturati, dashboard e statistiche per ricerca scientifica.</p>
+              </div>
+
+            </div>
+          </div>
+        </section>
+
+        <section class="dg-section-navy text-center">
+          <div class="container">
+            <h2 style="color:#fff;">Raccontaci il tuo progetto.</h2>
+            <p class="mt-3 mb-4 text-dg-muted">Prima call gratuita. Nessun impegno.</p>
+            <a href="/contatti/?area=software" class="btn-dg-accent">Parliamo →</a>
+          </div>
+        </section>
+
+      </div>
+    </t>
+  </t>"""
+
+  page_id = odoo("website.page", "create", args=[{
+      "name": "Debro Software",
+      "type": "qweb",
+      "key": "custom.page_software",
+      "url": "/software/",
+      "website_id": WEBSITE_ID,
+      "is_published": True,
+      "website_indexed": True,
+      "website_meta_title": "Debro Software · Sviluppo Custom e Consulenza ICT",
+      "website_meta_description": "Software custom e consulenza ICT end-to-end. Dall&#39;analisi al deployment, con chi sa davvero scrivere codice.",
+      "arch": ARCH,
+  }])
+  print(f"Software creata: id {page_id}")
   ```
 
-- [ ] **Step 5: Sezione Progetti (ID: `progetti`)**
-
-  Label: `Progetti realizzati`. H2: `In produzione, non in demo.`
-  
-  **ARCASID** (badge: "In produzione" — sfondo `#e8f5e9`, testo `#2e7d32`):
-  - H3: `ARCASID — Digital Logbook`
-  - Text: `Il primo sistema digitale per tirocini universitari. LogBook digitale, segreteria intelligente, Diploma Supplement automatico. Integrato con ESSE3/Cineca, SPID e SSO (Shibboleth, Microsoft SAML).`
-  - Link: `Università degli Studi di Milano Bicocca · arcasid.it →`
-
-  **BInclusion** (badge: "In sviluppo" — sfondo `#e3f2fd`, testo `#1565c0`):
-  - H3: `BInclusion`
-  - Text: `L'inclusione non si dichiara. Si misura. Piattaforma per gestione e monitoraggio dei percorsi di inclusione con strumenti operativi e dati reali per le decisioni.`
-  - ⚠️ Validare contenuto con cliente prima pubblicazione
-
-  **MedData** (badge: "In produzione"):
-  - H3: `MedData — Ricerca Clinica`
-  - Text: `Piattaforma cloud per raccolta dati clinici standardizzati: questionari strutturati, dashboard e statistiche per ricerca scientifica.`
-
-- [ ] **Step 6: CTA + aggiorna menu + verifica + commit**
-
-  CTA: `Raccontaci il tuo progetto.` / `Prima call gratuita. Nessun impegno.` / Button: `Parliamo →`
-  
-  Aggiorna menu voce "Software" → `/software/`. Verifica pagina. Commit:
   ```bash
-  git commit -m "feat: Debro Software page complete"
+  python scripts/07_software.py
+  ```
+
+- [ ] **Step 2: Verifica + Checkpoint**
+
+  ```bash
+  git add scripts/07_software.py
+  git commit -m "feat: Debro Software page via Odoo API"
   ```
 
 ---
 
 ## Task 8: Pagina Debro Formazione
 
-**Checkpoint:** Pagina `/formazione/` con hero, 3 aree, catalogo accordion, CTA.
+**Checkpoint:** `/formazione/` con hero, 3 aree, catalogo accordion Bootstrap, CTA.
 
-- [ ] **Step 1: Crea pagina e importa template**
+- [ ] **Step 1: Crea pagina**
 
-  Titolo: `Formazione`. Slug: `formazione`. Importa template BU.
+  ```python
+  # scripts/08_formazione.py
+  from helpers import odoo
+  from config import WEBSITE_ID
 
-- [ ] **Step 2: Hero**
+  ARCH = """<t t-name="custom.page_formazione">
+    <t t-call="website.layout">
+      <div id="wrap" class="oe_structure">
 
-  - Label: `Formazione`
-  - H1: `Formazione obbligatoria. Ma non inutile.`
-  - Sottotitolo: `Corsi D.Lgs. 81/08, ICT e sviluppo professionale — progettati per lasciare qualcosa, non solo un attestato.`
-  - CTA primaria: `Richiedi il catalogo` → `/contatti/?area=formazione`
-  - Visual DX: 3 icone area (HTML con emoji o SVG semplici):
-  ```html
-  <div style="display:flex;flex-direction:column;gap:12px;padding:20px;">
-    <div style="background:rgba(255,255,255,0.08);border-radius:8px;padding:12px 16px;display:flex;align-items:center;gap:12px;">
-      <span style="font-size:20px;">💻</span>
-      <div style="font-size:13px;font-weight:700;color:rgba(255,255,255,0.9);">ICT & Digital Skills</div>
-    </div>
-    <div style="background:rgba(255,255,255,0.08);border-radius:8px;padding:12px 16px;display:flex;align-items:center;gap:12px;">
-      <span style="font-size:20px;">📊</span>
-      <div style="font-size:13px;font-weight:700;color:rgba(255,255,255,0.9);">Management & Soft Skills</div>
-    </div>
-    <div style="background:rgba(255,255,255,0.08);border-radius:8px;padding:12px 16px;display:flex;align-items:center;gap:12px;">
-      <span style="font-size:20px;">⛑️</span>
-      <div style="font-size:13px;font-weight:700;color:rgba(255,255,255,0.9);">Sicurezza D.Lgs. 81/08</div>
-    </div>
-  </div>
+        <section class="dg-hero">
+          <div class="container">
+            <div class="row align-items-center g-5">
+              <div class="col-lg-7">
+                <div class="dg-accent-bar"></div>
+                <span class="dg-label" style="color:rgba(255,255,255,.7);">Formazione</span>
+                <h1>Formazione obbligatoria. Ma non inutile.</h1>
+                <p class="fs-5 mt-3 mb-4 text-dg-muted">Corsi D.Lgs. 81/08, ICT e sviluppo professionale — progettati per lasciare qualcosa, non solo un attestato.</p>
+                <a href="/contatti/?area=formazione" class="btn-dg-accent">Richiedi il catalogo</a>
+              </div>
+              <div class="col-lg-5">
+                <div class="d-flex flex-column gap-3">
+                  <div style="background:rgba(255,255,255,.08);border-radius:8px;padding:12px 16px;display:flex;align-items:center;gap:12px;">
+                    <span style="font-size:20px;">💻</span>
+                    <span style="font-size:13px;font-weight:700;color:rgba(255,255,255,.9);">ICT &amp; Digital Skills</span>
+                  </div>
+                  <div style="background:rgba(255,255,255,.08);border-radius:8px;padding:12px 16px;display:flex;align-items:center;gap:12px;">
+                    <span style="font-size:20px;">📊</span>
+                    <span style="font-size:13px;font-weight:700;color:rgba(255,255,255,.9);">Management &amp; Soft Skills</span>
+                  </div>
+                  <div style="background:rgba(255,255,255,.08);border-radius:8px;padding:12px 16px;display:flex;align-items:center;gap:12px;">
+                    <span style="font-size:20px;">⛑️</span>
+                    <span style="font-size:13px;font-weight:700;color:rgba(255,255,255,.9);">Sicurezza D.Lgs. 81/08</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="dg-section-white">
+          <div class="container">
+            <span class="dg-label">Le nostre aree</span>
+            <h2>Tre aree. Un approccio concreto.</h2>
+            <div class="row row-cols-1 row-cols-md-3 g-4 mt-3">
+              <div class="col"><div class="dg-card-light">
+                <h3>ICT &amp; Digital Skills</h3>
+                <p>Python, Java, React, SQL, Cybersecurity, Cloud, AI/ML. Programmi tecnici per chi deve davvero usare gli strumenti.</p>
+              </div></div>
+              <div class="col"><div class="dg-card-light">
+                <h3>Management e Soft Skills</h3>
+                <p>Agile, Scrum, PMI, Leadership, Comunicazione, Coaching. Per chi gestisce team, progetti o cambiamenti organizzativi.</p>
+              </div></div>
+              <div class="col"><div class="dg-card-light">
+                <h3>Salute e Sicurezza 81/08</h3>
+                <p>Corsi per lavoratori, preposti, dirigenti, RLS, RSPP, ASPP, antincendio, primo soccorso. Obbligatori e finalmente utili.</p>
+              </div></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="dg-section-light">
+          <div class="container">
+            <span class="dg-label">Catalogo corsi</span>
+            <h2>Cosa offriamo.</h2>
+            <div class="accordion mt-4" id="catalogoCorsi">
+
+              <div class="accordion-item border-0 mb-3" style="border-left:3px solid var(--dg-navy)!important;border-radius:8px;overflow:hidden;">
+                <h2 class="accordion-header">
+                  <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#ict" style="font-weight:700;color:var(--dg-dark);">ICT &amp; Digital Skills</button>
+                </h2>
+                <div id="ict" class="accordion-collapse collapse show" data-bs-parent="#catalogoCorsi">
+                  <div class="accordion-body">
+                    <ul class="list-unstyled">
+                      <li class="mb-2">✓ Programmazione — Python, Java, JavaScript/React, SQL</li>
+                      <li class="mb-2">✓ Cybersecurity &amp; Data Protection — GDPR, ISO/IEC 27001, OWASP</li>
+                      <li class="mb-2">✓ Cloud &amp; DevOps — AWS, Azure, Kubernetes, Docker, CI/CD</li>
+                      <li class="mb-2">✓ Digitalizzazione processi aziendali</li>
+                      <li>✓ AI &amp; Machine Learning applicata al business</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+              <div class="accordion-item border-0 mb-3" style="border-left:3px solid var(--dg-navy)!important;border-radius:8px;overflow:hidden;">
+                <h2 class="accordion-header">
+                  <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#mgmt" style="font-weight:700;color:var(--dg-dark);">Management e Soft Skills</button>
+                </h2>
+                <div id="mgmt" class="accordion-collapse collapse" data-bs-parent="#catalogoCorsi">
+                  <div class="accordion-body">
+                    <ul class="list-unstyled">
+                      <li class="mb-2">✓ Project Management Agile / Scrum / PMI</li>
+                      <li class="mb-2">✓ Leadership e gestione del team</li>
+                      <li class="mb-2">✓ Comunicazione efficace e negoziazione</li>
+                      <li>✓ Coaching e sviluppo soft skills</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+              <div class="accordion-item border-0" style="border-left:3px solid var(--dg-navy)!important;border-radius:8px;overflow:hidden;">
+                <h2 class="accordion-header">
+                  <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#safety" style="font-weight:700;color:var(--dg-dark);">Salute e Sicurezza D.Lgs. 81/08</button>
+                </h2>
+                <div id="safety" class="accordion-collapse collapse" data-bs-parent="#catalogoCorsi">
+                  <div class="accordion-body">
+                    <ul class="list-unstyled">
+                      <li class="mb-2">✓ Corsi per lavoratori — basso/medio/alto rischio + aggiornamenti</li>
+                      <li class="mb-2">✓ Corsi per dirigenti e datori di lavoro</li>
+                      <li class="mb-2">✓ RLS / RSPP / ASPP — moduli A, B, C + aggiornamenti</li>
+                      <li class="mb-2">✓ Antincendio — livelli 1, 2, 3 con prove pratiche</li>
+                      <li class="mb-2">✓ Primo Soccorso — gruppi A, B, C + BLSD</li>
+                      <li class="mb-2">✓ Lavori in quota + DPI III categoria</li>
+                      <li>✓ PES / PAV / PEI — sicurezza elettrica</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </section>
+
+        <section class="dg-section-navy text-center">
+          <div class="container">
+            <h2 style="color:#fff;">Verifica la tua scadenza.</h2>
+            <p class="mt-3 mb-4 text-dg-muted">Controlla lo stato dei tuoi obbligatori 81/08 e richiedi il catalogo completo.</p>
+            <a href="/contatti/?area=formazione" class="btn-dg-accent">Richiedi il catalogo</a>
+          </div>
+        </section>
+
+      </div>
+    </t>
+  </t>"""
+
+  page_id = odoo("website.page", "create", args=[{
+      "name": "Debro Formazione",
+      "type": "qweb",
+      "key": "custom.page_formazione",
+      "url": "/formazione/",
+      "website_id": WEBSITE_ID,
+      "is_published": True,
+      "website_indexed": True,
+      "website_meta_title": "Debro Formazione · Corsi 81/08, ICT e Management",
+      "website_meta_description": "Corsi D.Lgs. 81/08, ICT & Digital Skills e Management. Formazione obbligatoria e percorsi di sviluppo professionale.",
+      "arch": ARCH,
+  }])
+  print(f"Formazione creata: id {page_id}")
   ```
 
-- [ ] **Step 3: Sezione 3 aree formative**
-
-  Label: `Le nostre aree`. H2: `Tre aree. Un approccio concreto.`
-  
-  3 card (usa Inner Section 3 colonne):
-  - **ICT & Digital Skills** — `Python, Java, React, SQL, Cybersecurity, Cloud, AI/ML. Programmi tecnici per chi deve davvero usare gli strumenti.`
-  - **Management e Soft Skills** — `Agile, Scrum, PMI, Leadership, Comunicazione, Coaching. Per chi gestisce team, progetti o cambiamenti organizzativi e vuole farlo con metodo.`
-  - **Salute e Sicurezza 81/08** — `La formazione sulla sicurezza non è facoltativa. Noi la rendiamo anche efficace. Corsi per lavoratori, preposti, dirigenti, RLS, RSPP, ASPP, antincendio, primo soccorso.`
-
-- [ ] **Step 4: Catalogo corsi (accordion)**
-
-  Usa widget **Toggle** o **Accordion** di Elementor Pro. 3 gruppi:
-  
-  **ICT & Digital Skills:**
-  - Programmazione (Python, Java, JavaScript/React, SQL) — durata variabile — destinatari: sviluppatori, IT staff
-  - Cybersecurity & Data Protection (GDPR, ISO/IEC 27001, OWASP) — destinatari: IT, responsabili dati
-  - Cloud & DevOps (AWS, Azure, Kubernetes, Docker, CI/CD) — destinatari: DevOps, SysAdmin
-  - Digitalizzazione processi aziendali — destinatari: PM, responsabili operativi
-  - AI & Machine Learning applicata al business — destinatari: management, IT
-
-  **Management e Soft Skills:**
-  - Project Management Agile/Scrum/PMI standard
-  - Leadership e gestione del team
-  - Comunicazione efficace e negoziazione
-  - Coaching e sviluppo soft skills
-
-  **Salute e Sicurezza 81/08:**
-  - Corsi per lavoratori (basso/medio/alto rischio) + aggiornamenti periodici
-  - Corsi per dirigenti e datori di lavoro
-  - RLS/RSPP/ASPP — moduli A, B, C + aggiornamenti
-  - Antincendio — livelli 1, 2, 3 con prove pratiche
-  - Primo Soccorso — gruppi A, B, C + BLSD
-  - Lavori in quota + DPI III categoria
-  - PES/PAV/PEI — sicurezza elettrica
-
-- [ ] **Step 5: CTA**
-
-  H2: `Verifica la tua scadenza.`
-  Text: `Controlla lo stato dei tuoi obbligatori 81/08 e richiedi il catalogo completo.`
-  Button: `Richiedi il catalogo` → `/contatti/?area=formazione`
-
-- [ ] **Step 6: Aggiorna menu + verifica + commit**
-
   ```bash
-  git commit -m "feat: Debro Formazione page complete"
+  python scripts/08_formazione.py
+  git add scripts/08_formazione.py
+  git commit -m "feat: Debro Formazione page via Odoo API"
   ```
 
 ---
 
 ## Task 9: Pagina Debro AI
 
-**Checkpoint:** Pagina `/ai/` con hero, 3 servizi, sezione FAQ/casi, CTA.
-
-- [ ] **Step 1: Crea pagina e importa template**
-
-  Titolo: `AI`. Slug: `ai`. Importa template BU.
-
-- [ ] **Step 2: Hero**
-
-  - Label: `Debro AI`
-  - H1: `L'AI che lavora. Nei tuoi processi.`
-  - Sottotitolo: `Automazione, analisi e assistenti AI su misura. Nessuna demo. Solo risultati misurabili.`
-  - CTA primaria: `Parliamo dei tuoi processi` → `/contatti/?area=ai`
-  - Visual DX: diagramma astratto flusso (HTML):
-  ```html
-  <div style="padding:20px;display:flex;flex-direction:column;gap:8px;align-items:flex-start;">
-    <div style="background:rgba(255,255,255,0.08);border-radius:6px;padding:8px 14px;font-size:12px;color:rgba(255,255,255,0.8);display:flex;align-items:center;gap:8px;">
-      <span style="width:8px;height:8px;background:#F5A623;border-radius:50%;flex-shrink:0;"></span>Processo manuale
-    </div>
-    <div style="margin-left:20px;font-size:18px;color:rgba(255,255,255,0.3);">↓</div>
-    <div style="background:rgba(245,166,35,0.15);border-radius:6px;padding:8px 14px;font-size:12px;color:#F5A623;font-weight:700;border:1px solid rgba(245,166,35,0.3);display:flex;align-items:center;gap:8px;">
-      <span style="width:8px;height:8px;background:#F5A623;border-radius:50%;flex-shrink:0;"></span>AI Debro
-    </div>
-    <div style="margin-left:20px;font-size:18px;color:rgba(255,255,255,0.3);">↓</div>
-    <div style="background:rgba(255,255,255,0.08);border-radius:6px;padding:8px 14px;font-size:12px;color:rgba(255,255,255,0.8);display:flex;align-items:center;gap:8px;">
-      <span style="width:8px;height:8px;background:#4caf50;border-radius:50%;flex-shrink:0;"></span>Risultato misurabile
-    </div>
-  </div>
-  ```
-
-- [ ] **Step 3: Sezione 3 servizi**
-
-  Label: `Cosa facciamo`. H2: `AI pratica. Non teorica.`
-  
-  3 card:
-  - **Automazione dei processi** — `Identifichiamo i flussi ripetitivi — documentali, comunicativi, gestionali — e costruiamo automazioni che si integrano con i sistemi esistenti.`
-  - **Analisi e supporto alle decisioni** — `Report automatici, alert predittivi, dashboard su misura. Dati che diventano informazioni utili prima che servano.`
-  - **Assistenti AI su misura** — `Addestriamo modelli sui tuoi prodotti, procedure e settore. Non un chatbot generico — uno strumento che conosce la tua azienda.`
-
-- [ ] **Step 4: Sezione FAQ (placeholder casi PMI)**
-
-  Label: `Domande frequenti`. H2: `L'AI fa per la mia azienda?`
-  
-  Accordion con 4 domande:
-  - **Siamo una PMI senza team IT interno. Possiamo usare l'AI?** — `Sì. Progettiamo soluzioni che non richiedono un data scientist interno. Partiamo dai processi che già esistono.`
-  - **Quanto tempo ci vuole per vedere risultati?** — `Dipende dal processo. Le prime automazioni semplici sono operative in 2-4 settimane. Progetti più complessi seguono un piano incrementale con rilasci parziali.`
-  - **I nostri dati restano al sicuro?** — `Sì. Progettiamo con GDPR compliance by design. I dati del cliente non vengono usati per addestrare modelli generali.`
-  - **Che differenza c'è da ChatGPT o Copilot?** — `Quelli sono strumenti generici. Noi costruiamo soluzioni specifiche per il tuo settore, i tuoi dati e i tuoi processi.`
-  
-  ⚠️ Sostituire con casi PMI reali quando disponibili (vedi spec sezione 9).
-
-- [ ] **Step 5: CTA + menu + verifica + commit**
-
-  H2: `Parliamo dei tuoi processi.` / Button: `Prenota una call gratuita` → `/contatti/?area=ai`
-  
-  Aggiorna menu voce "AI" → `/ai/`.
-  ```bash
-  git commit -m "feat: Debro AI page complete"
-  ```
-
----
-
-## Task 10: Pagina Contatti
-
-**Checkpoint:** Form funzionante, email in arrivo all'indirizzo corretto, mappa visibile.
+**Checkpoint:** `/ai/` con hero, 3 servizi, FAQ accordion, CTA.
 
 - [ ] **Step 1: Crea pagina**
 
-  Titolo: `Contatti`. Slug: `contatti`. Template: `Elementor Canvas`. Pubblica. Apri con Elementor.
+  ```python
+  # scripts/09_ai.py
+  from helpers import odoo
+  from config import WEBSITE_ID
 
-- [ ] **Step 2: Crea form con WPForms**
+  ARCH = """<t t-name="custom.page_ai">
+    <t t-call="website.layout">
+      <div id="wrap" class="oe_structure">
 
-  Vai in **WPForms → Aggiungi nuovo**. Scegli template "Simple Contact Form". Modifica:
-  - Campo: Nome e Cognome (testo, obbligatorio)
-  - Campo: Azienda (testo, opzionale)
-  - Campo: Email (email, obbligatorio)
-  - Campo: Telefono (testo, opzionale)
-  - Campo: Area di interesse (dropdown, obbligatorio) — opzioni: `Consulting`, `Software`, `Formazione`, `AI`, `Altro`
-  - Campo: Messaggio (textarea, obbligatorio)
-  - Campo: Accetto la Privacy Policy (checkbox, obbligatorio) — testo: `Ho letto e accetto la [Privacy Policy](/privacy-policy/)`
+        <section class="dg-hero">
+          <div class="container">
+            <div class="row align-items-center g-5">
+              <div class="col-lg-7">
+                <div class="dg-accent-bar"></div>
+                <span class="dg-label" style="color:#F5A623;">Debro AI</span>
+                <h1>L&#39;AI che lavora. Nei tuoi processi.</h1>
+                <p class="fs-5 mt-3 mb-4 text-dg-muted">Automazione, analisi e assistenti AI su misura. Nessuna demo. Solo risultati misurabili.</p>
+                <a href="/contatti/?area=ai" class="btn-dg-accent">Parliamo dei tuoi processi</a>
+              </div>
+              <div class="col-lg-5">
+                <div class="d-flex flex-column gap-2 align-items-start">
+                  <div style="background:rgba(255,255,255,.08);border-radius:6px;padding:8px 14px;font-size:12px;color:rgba(255,255,255,.8);display:flex;align-items:center;gap:8px;">
+                    <span style="width:8px;height:8px;background:#F5A623;border-radius:50%;flex-shrink:0;"></span>Processo manuale
+                  </div>
+                  <div style="margin-left:20px;font-size:18px;color:rgba(255,255,255,.3);">↓</div>
+                  <div style="background:rgba(245,166,35,.15);border-radius:6px;padding:8px 14px;font-size:12px;color:#F5A623;font-weight:700;border:1px solid rgba(245,166,35,.3);display:flex;align-items:center;gap:8px;">
+                    <span style="width:8px;height:8px;background:#F5A623;border-radius:50%;flex-shrink:0;"></span>AI Debro
+                  </div>
+                  <div style="margin-left:20px;font-size:18px;color:rgba(255,255,255,.3);">↓</div>
+                  <div style="background:rgba(255,255,255,.08);border-radius:6px;padding:8px 14px;font-size:12px;color:rgba(255,255,255,.8);display:flex;align-items:center;gap:8px;">
+                    <span style="width:8px;height:8px;background:#4caf50;border-radius:50%;flex-shrink:0;"></span>Risultato misurabile
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
 
-  Vai in **Impostazioni → Notifiche**:
-  - Invia a: `vincenzo.defalco@debro.it`
-  - Oggetto: `[Debro] Nuovo contatto da {field_id="1"} — {field_id="4"}`
-  - Messaggio: includi tutti i campi con smart tag `{all_fields}`
+        <section class="dg-section-white">
+          <div class="container">
+            <span class="dg-label">Cosa facciamo</span>
+            <h2>AI pratica. Non teorica.</h2>
+            <div class="row row-cols-1 row-cols-md-3 g-4 mt-3">
+              <div class="col"><div class="dg-card-light">
+                <h3>Automazione dei processi</h3>
+                <p>Identifichiamo i flussi ripetitivi — documentali, comunicativi, gestionali — e costruiamo automazioni che si integrano con i sistemi esistenti.</p>
+              </div></div>
+              <div class="col"><div class="dg-card-light">
+                <h3>Analisi e supporto alle decisioni</h3>
+                <p>Report automatici, alert predittivi, dashboard su misura. Dati che diventano informazioni utili prima che servano.</p>
+              </div></div>
+              <div class="col"><div class="dg-card-light">
+                <h3>Assistenti AI su misura</h3>
+                <p>Addestriamo modelli sui tuoi prodotti, procedure e settore. Non un chatbot generico — uno strumento che conosce la tua azienda.</p>
+              </div></div>
+            </div>
+          </div>
+        </section>
 
-  Vai in **Impostazioni → Conferme**:
-  - Tipo: Messaggio
-  - Testo: `Grazie! Abbiamo ricevuto il tuo messaggio e ti risponderemo entro 24 ore lavorative.`
+        <section class="dg-section-light">
+          <div class="container">
+            <span class="dg-label">Domande frequenti</span>
+            <h2>L&#39;AI fa per la mia azienda?</h2>
+            <div class="accordion mt-4" id="faqAI">
+              <div class="accordion-item border-0 mb-3" style="border-left:3px solid var(--dg-accent)!important;border-radius:8px;overflow:hidden;">
+                <h2 class="accordion-header"><button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#faq1" style="font-weight:700;">Siamo una PMI senza team IT interno. Possiamo usare l&#39;AI?</button></h2>
+                <div id="faq1" class="accordion-collapse collapse show" data-bs-parent="#faqAI">
+                  <div class="accordion-body">Sì. Progettiamo soluzioni che non richiedono un data scientist interno. Partiamo dai processi che già esistono.</div>
+                </div>
+              </div>
+              <div class="accordion-item border-0 mb-3" style="border-left:3px solid var(--dg-accent)!important;border-radius:8px;overflow:hidden;">
+                <h2 class="accordion-header"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq2" style="font-weight:700;">Quanto tempo ci vuole per vedere risultati?</button></h2>
+                <div id="faq2" class="accordion-collapse collapse" data-bs-parent="#faqAI">
+                  <div class="accordion-body">Dipende dal processo. Le prime automazioni semplici sono operative in 2-4 settimane. Progetti più complessi seguono un piano incrementale con rilasci parziali.</div>
+                </div>
+              </div>
+              <div class="accordion-item border-0 mb-3" style="border-left:3px solid var(--dg-accent)!important;border-radius:8px;overflow:hidden;">
+                <h2 class="accordion-header"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq3" style="font-weight:700;">I nostri dati restano al sicuro?</button></h2>
+                <div id="faq3" class="accordion-collapse collapse" data-bs-parent="#faqAI">
+                  <div class="accordion-body">Sì. Progettiamo con GDPR compliance by design. I dati del cliente non vengono usati per addestrare modelli generali.</div>
+                </div>
+              </div>
+              <div class="accordion-item border-0" style="border-left:3px solid var(--dg-accent)!important;border-radius:8px;overflow:hidden;">
+                <h2 class="accordion-header"><button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#faq4" style="font-weight:700;">Che differenza c&#39;è da ChatGPT o Copilot?</button></h2>
+                <div id="faq4" class="accordion-collapse collapse" data-bs-parent="#faqAI">
+                  <div class="accordion-body">Quelli sono strumenti generici. Noi costruiamo soluzioni specifiche per il tuo settore, i tuoi dati e i tuoi processi.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
 
-  Salva form.
+        <section class="dg-section-navy text-center">
+          <div class="container">
+            <h2 style="color:#fff;">Parliamo dei tuoi processi.</h2>
+            <p class="mt-3 mb-4 text-dg-muted">Prima call gratuita. Nessun impegno.</p>
+            <a href="/contatti/?area=ai" class="btn-dg-accent">Prenota una call gratuita</a>
+          </div>
+        </section>
 
-- [ ] **Step 3: Configura SMTP**
+      </div>
+    </t>
+  </t>"""
 
-  Installa plugin **WP Mail SMTP**. Configuralo con le credenziali SMTP dell'account `@debro.it` (o usa Brevo/SendGrid per deliverability migliore). Testa invio da **WP Mail SMTP → Strumenti → Test email**.
-
-- [ ] **Step 4: Costruisci pagina Contatti in Elementor**
-
-  Sezione 1 — Hero minimal:
-  - Background: `#1A3A6B`. Padding 60px 0.
-  - H1 (bianco): `Parliamo.`
-  - Text (rgba bianco 65%): `Scegli l'area, raccontaci il tuo progetto.`
-
-  Sezione 2 — Form + Info:
-  - Layout 2 colonne (65% / 35%). Background: `#FFFFFF`. Padding: 80px 0.
-  - Colonna SX: Widget **WPForms** → seleziona form creato
-  - Colonna DX:
-    - H3: `Dove siamo`
-    - Text: indirizzo fisico Debro (da inserire)
-    - Text: email cliccabile con mailto
-    - Text: telefono cliccabile con tel
-    - Widget Map (Elementor Pro) con indirizzo Debro — API key Google Maps necessaria
-
-  Sezione 3 — CTA footer pagina:
-  - Text centrato: `Oppure scrivici direttamente a [email]`
-
-- [ ] **Step 5: Verifica form**
-
-  Compila form con dati test. Invia. Verifica:
-  - [ ] Email arriva a `vincenzo.defalco@debro.it` con tutti i campi
-  - [ ] Messaggio di conferma appare sulla pagina
-  - [ ] Checkbox Privacy obbligatoria funziona (blocca submit se non selezionata)
-
-- [ ] **Step 6: Aggiorna CTA globale**
-
-  Verifica che tutte le CTA su homepage e pagine BU che puntano a `/contatti/` carichino correttamente la pagina.
-
-- [ ] **Step 7: Checkpoint**
+  page_id = odoo("website.page", "create", args=[{
+      "name": "Debro AI",
+      "type": "qweb",
+      "key": "custom.page_ai",
+      "url": "/ai/",
+      "website_id": WEBSITE_ID,
+      "is_published": True,
+      "website_indexed": True,
+      "website_meta_title": "Debro AI · Intelligenza Artificiale per PMI",
+      "website_meta_description": "Automazione processi, analisi predittiva e assistenti AI su misura. AI pratica e misurabile per le PMI italiane.",
+      "arch": ARCH,
+  }])
+  print(f"AI creata: id {page_id}")
+  ```
 
   ```bash
-  git commit -m "feat: contatti page with working form"
+  python scripts/09_ai.py
+  git add scripts/09_ai.py
+  git commit -m "feat: Debro AI page via Odoo API"
   ```
 
 ---
 
-## Task 11: Multilingua IT/EN con WPML
+## Task 10: Pagina Contatti (form → CRM nativo)
 
-**Checkpoint:** Versione EN accessibile su `/en/`, switcher navbar funzionante, contenuto tradotto.
+**Checkpoint:** Form funzionante, lead visibile in Odoo CRM → Pipeline. Privacy checkbox obbligatoria.
 
-- [ ] **Step 1: Configura WPML per le pagine esistenti**
+- [ ] **Step 1: Configura CRM defaults via API**
 
-  Vai in **WPML → Traduzione** → vedrà tutte le pagine create. Per ogni pagina (Homepage, Consulting, Software, Formazione, AI, Contatti):
-  - Click **+** nella colonna EN → `Tradurre`
-  - Si apre editor WPML — inserisci testo EN per ogni campo
+  ```python
+  # scripts/10_contatti.py (prima parte)
+  from helpers import odoo
+  from config import WEBSITE_ID
 
-- [ ] **Step 2: Traduci Homepage EN**
+  # Trova team CRM di default (o usa ID 1)
+  teams = odoo("crm.team", "search_read",
+      kwargs={"domain": [], "fields": ["id", "name"], "limit": 5})
+  print(teams)  # nota ID team da assegnare come default
 
-  Traduzione adattata (non letterale). Testi chiave:
-  - H1: `One group. Four specializations. Zero improvisation.`
+  TEAM_ID = teams[0]["id"]  # aggiusta se necessario
+
+  odoo("website", "write",
+      args=[[WEBSITE_ID], {"crm_default_team_id": TEAM_ID}])
+  print("CRM default team configurato.")
+  ```
+
+- [ ] **Step 2: Crea pagina Contatti**
+
+  ```python
+  # continua in scripts/10_contatti.py
+
+  ARCH = """<t t-name="custom.page_contatti">
+    <t t-call="website.layout">
+      <div id="wrap" class="oe_structure">
+
+        <!-- Hero minimal -->
+        <section class="dg-section-navy text-center" style="padding:60px 0;">
+          <div class="container">
+            <h1 style="color:#fff;">Parliamo.</h1>
+            <p class="mt-2 text-dg-muted">Scegli l&#39;area, raccontaci il tuo progetto.</p>
+          </div>
+        </section>
+
+        <!-- Form + Info -->
+        <section class="dg-section-white">
+          <div class="container">
+            <div class="row g-5">
+
+              <div class="col-lg-7">
+                <form action="/web/dataset/call_kw" method="post"
+                      data-model_name="crm.lead"
+                      data-success_page="/grazie/"
+                      class="s_website_form"
+                      enctype="multipart/form-data">
+
+                  <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+
+                  <div class="row g-3">
+                    <div class="col-md-6">
+                      <label class="form-label fw-bold">Nome e Cognome *</label>
+                      <input type="text" name="contact_name" class="form-control" required="required" placeholder="Mario Rossi"/>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label fw-bold">Azienda</label>
+                      <input type="text" name="partner_name" class="form-control" placeholder="Azienda Srl"/>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label fw-bold">Email *</label>
+                      <input type="email" name="email_from" class="form-control" required="required" placeholder="mario@azienda.it"/>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label fw-bold">Telefono</label>
+                      <input type="tel" name="phone" class="form-control" placeholder="+39 02 123456"/>
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label fw-bold">Area di interesse *</label>
+                      <select name="name" class="form-select" required="required">
+                        <option value="">Seleziona un&#39;area...</option>
+                        <option value="Sito web — Consulting">Consulting</option>
+                        <option value="Sito web — Software">Software</option>
+                        <option value="Sito web — Formazione">Formazione</option>
+                        <option value="Sito web — AI">AI</option>
+                        <option value="Sito web — Altro">Altro</option>
+                      </select>
+                    </div>
+                    <div class="col-12">
+                      <label class="form-label fw-bold">Messaggio *</label>
+                      <textarea name="description" class="form-control" rows="5" required="required" placeholder="Raccontaci il tuo progetto o la tua necessità..."></textarea>
+                    </div>
+                    <div class="col-12">
+                      <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="privacy" required="required"/>
+                        <label class="form-check-label" for="privacy">
+                          Ho letto e accetto la <a href="/privacy-policy/" target="_blank">Privacy Policy</a> *
+                        </label>
+                      </div>
+                    </div>
+                    <div class="col-12">
+                      <button type="submit" class="btn-dg-accent">Invia messaggio</button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+
+              <div class="col-lg-5">
+                <h3>Dove siamo</h3>
+                <p style="color:var(--dg-slate);">[INDIRIZZO DA INSERIRE]<br/>[CAP Città (Prov.)]</p>
+                <p><a href="mailto:info@debro.it" style="color:var(--dg-navy);font-weight:600;">info@debro.it</a></p>
+                <p><a href="tel:+39XXXXXXXXXX" style="color:var(--dg-navy);font-weight:600;">[TELEFONO]</a></p>
+                <div class="mt-4" style="border-radius:8px;overflow:hidden;">
+                  <iframe
+                    src="https://www.google.com/maps/embed?pb=INSERISCI_EMBED_URL"
+                    width="100%" height="250" style="border:0;" allowfullscreen="" loading="lazy">
+                  </iframe>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </t>
+  </t>"""
+
+  page_id = odoo("website.page", "create", args=[{
+      "name": "Contatti",
+      "type": "qweb",
+      "key": "custom.page_contatti",
+      "url": "/contatti/",
+      "website_id": WEBSITE_ID,
+      "is_published": True,
+      "website_indexed": False,
+      "website_meta_title": "Contatti · Debro Group",
+      "website_meta_description": "Contatta Debro Group per consulenza, sviluppo software, formazione o AI. Prima call gratuita.",
+      "arch": ARCH,
+  }])
+  print(f"Contatti creata: id {page_id}")
+  ```
+
+  > ⚠️ Sostituisci `[INDIRIZZO]`, `[TELEFONO]`, e l'URL embed Google Maps prima di pubblicare.
+  > ⚙️ Per Google Maps embed: vai su maps.google.com → cerca indirizzo → Condividi → Incorpora una mappa → copia URL src.
+
+- [ ] **Step 3: Configura SMTP Odoo** ⚙️
+
+  **Settings → Technical → Outgoing Mail Servers** → aggiungi server SMTP `@debro.it`. Testa invio.
+
+- [ ] **Step 4: Verifica lead CRM**
+
+  Compila e invia il form. Vai in **CRM → Pipeline** — verifica che il lead appaia con area e messaggio.
+
+- [ ] **Step 5: Checkpoint**
+
+  ```bash
+  git add scripts/10_contatti.py
+  git commit -m "feat: contatti page with native Odoo CRM form"
+  ```
+
+---
+
+## Task 11: Multilingua IT/EN
+
+**Checkpoint:** `debro.it/en/` accessibile, switcher lingua in navbar, pagine IT tradotte in EN.
+
+- [ ] **Step 1: Verifica lingua EN attiva** — già fatto in Task 1 Step 4.
+
+- [ ] **Step 2: Traduci pagine in Odoo** ⚙️
+
+  In Odoo Website: apri ogni pagina → click **Translate** (bottone in alto) → traduzione campo per campo.
+
+  Testi chiave EN da tradurre:
+  - H1 Homepage: `One group. Four specializations. Zero improvisation.`
   - Chi siamo H2: `We're not a catch-all agency. We're a group that knows what it does.`
-  - Chi siamo body: `Debro is an ecosystem of expertise: organizational consulting, software development, professional training and applied AI. Four specialized units, one goal — delivering real value to those who choose us.`
   - CTA: `Discover the Group` / `Contact Us`
+  - BU pages: headline + sottotitolo + CTA (stesso tono diretto IT)
 
-- [ ] **Step 3: Traduci pagine BU EN**
+  Alternativa API (avanzata):
 
-  Per ogni BU tradurre: headline, sottotitolo, nomi servizi, descrizioni, CTA. Mantenere tono: diretto, B2B, niente hype. Stessa struttura IT.
+  ```python
+  # Aggiorna nome menu in EN
+  odoo("website.menu", "write",
+      args=[[MENU_ID], {"name": "Consulting"}],
+      kwargs={"context": {"lang": "en_US"}})
+  ```
 
-- [ ] **Step 4: Configura language switcher navbar**
+- [ ] **Step 3: Verifica switcher lingua** ⚙️
 
-  Vai in **WPML → Lingue → Language Switcher**. Tipo: dropdown o flag + codice. Posizionalo nell'header Astra (Custom HTML widget in header builder con shortcode WPML: `[wpml_language_switcher]`).
+  Il switcher IT/EN appare automaticamente nella navbar Odoo quando più lingue sono attive.
+  Stile: **Website → Settings → Language Selector** → scegli formato (dropdown, inline, flag).
 
-- [ ] **Step 5: Configura hreflang**
-
-  WPML aggiunge automaticamente hreflang se correttamente configurato. Verifica in **WPML → Impostazioni SEO multilingue** che sia attivo.
-
-- [ ] **Step 6: Verifica**
-
-  - Apri `debro.it/en/` — vedi homepage EN ✓
-  - Click switcher → passa da IT a EN e viceversa ✓
-  - `debro.it/en/consulting/` carica pagina EN ✓
-
-- [ ] **Step 7: Checkpoint**
+- [ ] **Step 4: Checkpoint**
 
   ```bash
-  git commit -m "feat: WPML multilingual IT/EN configured"
+  git commit -m "feat: IT/EN multilingual configured"
   ```
 
 ---
 
-## Task 12: SEO, performance e lancio
+## Task 12: SEO e lancio
 
-**Checkpoint:** Lighthouse score ≥ 85 su mobile. Sitemap XML attiva. Cookie banner funzionante.
+**Checkpoint:** Sitemap attiva, meta tag corretti per ogni pagina, cookie banner GDPR configurato, sito live su `debro.it`.
 
-- [ ] **Step 1: Configura Yoast SEO**
+- [ ] **Step 1: Verifica meta tag via API**
 
-  Vai in **Yoast SEO → Impostazioni → Generali**:
-  - Nome sito: `Debro Group`
-  - Separatore: `·`
-  
-  Vai in **Yoast SEO → Impostazioni → Sito web**:
-  - Tipo organizzazione: Organizzazione
+  Meta title e description già settati nei Task 5–10. Verifica:
+
+  ```python
+  # scripts/12_seo_check.py
+  from helpers import odoo
+  from config import WEBSITE_ID
+
+  pages = odoo("website.page", "search_read",
+      kwargs={"domain": [["website_id", "=", WEBSITE_ID]],
+              "fields": ["name", "url", "website_meta_title", "website_meta_description"]})
+  for p in pages:
+      print(f"{p['url']}: title={len(p.get('website_meta_title','') or '')}ch  desc={len(p.get('website_meta_description','') or '')}ch")
+  ```
+
+- [ ] **Step 2: Schema Organization** ⚙️
+
+  **Website → Settings → SEO**:
+  - Tipo organizzazione: `Organization`
   - Nome: `Debro Group`
-  - Logo: carica logo Debro
+  - Logo: già caricato in Task 1
 
-  Per ogni pagina, apri editor WordPress → pannello Yoast → compila:
-  
-  | Pagina | SEO Title | Meta Description |
-  |---|---|---|
-  | Homepage | `Debro Group · Consulting, Software, Formazione e AI per PMI` | `Debro è un gruppo di competenze specializzate: consulenza normativa, sviluppo software, formazione professionale e AI applicata per le PMI italiane.` |
-  | Consulting | `Debro Consulting · ISO, ACN, Sistemi di Gestione` | `Sistemi di gestione, accreditamento ACN e normative ISO per aziende che non vogliono essere colte impreparate.` |
-  | Software | `Debro Software · Sviluppo Custom e Consulenza ICT` | `Software custom e consulenza ICT end-to-end. Dall'analisi al deployment, con chi sa davvero scrivere codice.` |
-  | Formazione | `Debro Formazione · Corsi 81/08, ICT e Management` | `Corsi D.Lgs. 81/08, ICT & Digital Skills e Management. Formazione obbligatoria e percorsi di sviluppo professionale.` |
-  | AI | `Debro AI · Intelligenza Artificiale per PMI` | `Automazione processi, analisi predittiva e assistenti AI su misura. AI pratica e misurabile per le PMI italiane.` |
-  | Contatti | `Contatti · Debro Group` | `Contatta Debro Group per consulenza, sviluppo software, formazione o AI. Prima call gratuita.` |
+- [ ] **Step 3: Sitemap XML**
 
-- [ ] **Step 2: Attiva WP Rocket**
+  Odoo genera automaticamente `/sitemap.xml`. Verifica: apri `debro.it/sitemap.xml`. Tutte le pagine IT + EN presenti. ✓
 
-  Vai in **WP Rocket → Dashboard** → toggle ON.
-  
-  Configura:
-  - **Cache:** attiva page cache, cache mobile separata ON
-  - **File Optimization:** minifica CSS e JS ON, carica JS in modo differito ON
-  - **Immagini:** lazy load ON, WebP ON (se server supporta)
-  - **CDN:** se usi Cloudflare, vai in tab CDN → inserisci URL CDN
+- [ ] **Step 4: Cookie banner GDPR** ⚙️
 
-- [ ] **Step 3: Ottimizza immagini**
+  **Website → Settings → Privacy Policy** → attiva cookie bar nativa Odoo.
+  Crea pagina Privacy Policy: **Website → New Page** → `/privacy-policy/`.
 
-  Installa **ShortPixel Image Optimizer** (piano gratuito: 100 immagini/mese). Vai in **ShortPixel → Bulk Optimize** → ottimizza tutte le immagini caricate (loghi clienti, logo Debro).
+- [ ] **Step 5: Homepage come pagina principale** ⚙️
 
-- [ ] **Step 4: Configura Cookie Banner**
+  **Website → Settings → Homepage** → seleziona la pagina Homepage creata in Task 5.
 
-  Vai in **CookieYes → Cookie Banner**:
-  - Template: minimal, colori navy/bianco coerenti col sito
-  - Lingua: IT (con versione EN per utenti /en/)
-  - Categorie: Necessari (sempre ON) + Analitici (opt-in) + Marketing (opt-in)
-  - Testo banner: `Utilizziamo cookie per migliorare la tua esperienza. Puoi accettare tutti i cookie o gestire le tue preferenze.`
-  - Bottoni: `Accetta tutti` (accent amber) | `Gestisci preferenze`
-
-  Crea pagina Privacy Policy e Cookie Policy (richieste legalmente). Usa generator IUBENDA o Termageddon.
-
-- [ ] **Step 5: Configura Wordfence**
-
-  Vai in **Wordfence → Gestione Firewall** → attiva firewall. Vai in **Wordfence → Scansione** → esegui prima scansione. Nessun malware. ✓
-
-- [ ] **Step 6: Test Lighthouse**
-
-  Apri Chrome DevTools su `debro.it`. Tab Lighthouse. Esegui audit su Mobile.
-  
-  Target minimo:
-  - Performance: ≥ 85
-  - Accessibility: ≥ 90
-  - Best Practices: ≥ 90
-  - SEO: ≥ 95
-  
-  Se Performance < 85: verificare immagini non ottimizzate, JS bloccante, WP Rocket non attivo.
-
-- [ ] **Step 7: Test cross-browser**
-
-  Verifica su:
-  - [ ] Chrome (desktop + mobile)
-  - [ ] Safari (desktop + iPhone)
-  - [ ] Firefox (desktop)
-  - [ ] Edge (desktop)
-
-- [ ] **Step 8: Checklist pre-lancio**
+- [ ] **Step 6: Checklist pre-lancio**
 
   - [ ] Tutti i link interni funzionanti (nessun 404)
-  - [ ] Form contatti testato e email arriva
+  - [ ] Form contatti testato — lead arriva in CRM
   - [ ] Switcher IT/EN funzionante su tutte le pagine
   - [ ] Cookie banner appare alla prima visita
-  - [ ] Privacy Policy e Cookie Policy pagine pubblicate
-  - [ ] `robots.txt` accessibile su `debro.it/robots.txt`
-  - [ ] Sitemap XML su `debro.it/sitemap_index.xml`
+  - [ ] Privacy Policy pagina pubblicata
+  - [ ] `debro.it/sitemap.xml` accessibile e completa
   - [ ] Google Search Console: verifica sito e invia sitemap
-  - [ ] Analytics: installa Google Analytics 4 o Plausible (privacy-first)
-  - [ ] SSL: certificato HTTPS attivo e forzato
+  - [ ] SSL attivo (Odoo Online gestisce HTTPS automaticamente)
+  - [ ] Indirizzo e telefono in pagina Contatti aggiornati
+  - [ ] Google Maps embed funzionante
 
-- [ ] **Step 9: Lancio**
-
-  Se sviluppato su staging: aggiorna il dominio principale in **Impostazioni → Generali**. Svuota cache WP Rocket. Svuota cache Cloudflare.
-
-- [ ] **Step 10: Checkpoint finale**
+- [ ] **Step 7: Checkpoint finale**
 
   ```bash
-  git commit -m "feat: SEO, performance e lancio completati — sito Debro Group live"
-  ```
-
----
-
----
-
-## Task 13: Integrazione Odoo CRM — lead da form contatti
-
-**Checkpoint:** Ogni submit del form contatti WordPress crea automaticamente un lead in Odoo CRM. Email di notifica Odoo inviata. Dati visibili in CRM → Pipeline.
-
-**Prerequisiti:** Task 10 completato (form WPForms attivo). Odoo Online 19 con modulo CRM attivo.
-
-**Credenziali necessarie prima di iniziare:**
-- URL istanza Odoo (es. `https://debro.odoo.com`)
-- Database name (visibile in Settings → Technical → Database)
-- Username (email account Odoo)
-- API Key Odoo: vai in **Odoo → Settings → Users → [tuo utente] → API Keys → New**
-
----
-
-- [ ] **Step 1: Crea file di configurazione credenziali**
-
-  Nella root del progetto WordPress (fuori dalla webroot, oppure come costante in `wp-config.php`):
-
-  ```php
-  // In wp-config.php — aggiungi dopo le costanti DB
-  define('ODOO_URL',      'https://debro.odoo.com');
-  define('ODOO_DB',       'debro');           // sostituisci col database name reale
-  define('ODOO_USER',     'vincenzo.defalco@debro.it');
-  define('ODOO_API_KEY',  'YOUR_API_KEY');    // mai committare il valore reale
-  ```
-
-  ⚠️ Aggiungi `wp-config.php` a `.gitignore` se non già presente (contiene credenziali).
-
-- [ ] **Step 2: Crea plugin WordPress per bridge Odoo**
-
-  Crea file: `wp-content/plugins/debro-odoo-bridge/debro-odoo-bridge.php`
-
-  ```php
-  <?php
-  /**
-   * Plugin Name: Debro Odoo Bridge
-   * Description: Invia lead da WPForms a Odoo CRM via XML-RPC
-   * Version: 1.0
-   */
-
-  if ( ! defined( 'ABSPATH' ) ) exit;
-
-  add_action( 'wpforms_process_complete', 'debro_send_lead_to_odoo', 10, 4 );
-
-  function debro_send_lead_to_odoo( $fields, $entry, $form_data, $entry_id ) {
-      // Esegui solo per il form Contatti (verifica l'ID del form in WPForms → lista form)
-      $contact_form_id = 1; // <-- sostituisci con ID reale del form
-      if ( (int) $form_data['id'] !== $contact_form_id ) {
-          return;
-      }
-
-      $nome          = sanitize_text_field( $fields[1]['value'] ?? '' );
-      $azienda       = sanitize_text_field( $fields[2]['value'] ?? '' );
-      $email         = sanitize_email(      $fields[3]['value'] ?? '' );
-      $telefono      = sanitize_text_field( $fields[4]['value'] ?? '' );
-      $area          = sanitize_text_field( $fields[5]['value'] ?? '' );
-      $messaggio     = sanitize_textarea_field( $fields[6]['value'] ?? '' );
-
-      $odoo_url  = ODOO_URL;
-      $db        = ODOO_DB;
-      $user      = ODOO_USER;
-      $api_key   = ODOO_API_KEY;
-
-      // Autenticazione XML-RPC
-      $uid = debro_odoo_xmlrpc(
-          $odoo_url . '/xmlrpc/2/common',
-          'authenticate',
-          [ $db, $user, $api_key, [] ]
-      );
-
-      if ( ! $uid || is_wp_error( $uid ) ) {
-          error_log( '[Debro Odoo Bridge] Autenticazione fallita: ' . print_r( $uid, true ) );
-          return;
-      }
-
-      // Crea lead in CRM
-      $lead_id = debro_odoo_xmlrpc(
-          $odoo_url . '/xmlrpc/2/object',
-          'execute_kw',
-          [
-              $db, $uid, $api_key,
-              'crm.lead', 'create',
-              [[
-                  'name'         => 'Sito web — ' . $nome . ( $azienda ? ' (' . $azienda . ')' : '' ),
-                  'contact_name' => $nome,
-                  'partner_name' => $azienda,
-                  'email_from'   => $email,
-                  'phone'        => $telefono,
-                  'description'  => "Area: $area\n\n$messaggio",
-                  'tag_ids'      => [],
-                  'source_id'    => false,
-              ]]
-          ]
-      );
-
-      if ( is_wp_error( $lead_id ) ) {
-          error_log( '[Debro Odoo Bridge] Creazione lead fallita: ' . $lead_id->get_error_message() );
-      } else {
-          error_log( '[Debro Odoo Bridge] Lead creato: ID ' . $lead_id );
-      }
-  }
-
-  function debro_odoo_xmlrpc( string $endpoint, string $method, array $params ) {
-      $request = xmlrpc_encode_request( $method, $params );
-
-      $response = wp_remote_post( $endpoint, [
-          'headers'     => [ 'Content-Type' => 'text/xml' ],
-          'body'        => $request,
-          'timeout'     => 15,
-          'sslverify'   => true,
-      ]);
-
-      if ( is_wp_error( $response ) ) {
-          return $response;
-      }
-
-      $body   = wp_remote_retrieve_body( $response );
-      $parsed = xmlrpc_decode( $body );
-
-      if ( is_array( $parsed ) && xmlrpc_is_fault( $parsed ) ) {
-          return new WP_Error( 'odoo_fault', $parsed['faultString'] );
-      }
-
-      return $parsed;
-  }
-  ```
-
-- [ ] **Step 3: Attiva plugin**
-
-  Vai in **WordPress → Plugin → Plugin installati**. Cerca `Debro Odoo Bridge`. Attiva.
-
-- [ ] **Step 4: Recupera ID del form contatti**
-
-  Vai in **WPForms → Tutti i form**. Nota l'ID numerico del form Contatti (visibile nella colonna "Shortcode" o nell'URL di modifica). Aggiorna `$contact_form_id` nel plugin con il valore corretto.
-
-- [ ] **Step 5: Mappa ID campi WPForms**
-
-  Apri il form Contatti in WPForms → Editor. Per ogni campo, clicca e nota l'ID campo (pannello DX → "Field ID"). Aggiorna le righe `$fields[N]` nel plugin con gli ID reali:
-
-  | Variabile | Campo |
-  |---|---|
-  | `$fields[1]` | Nome e Cognome |
-  | `$fields[2]` | Azienda |
-  | `$fields[3]` | Email |
-  | `$fields[4]` | Telefono |
-  | `$fields[5]` | Area di interesse |
-  | `$fields[6]` | Messaggio |
-
-- [ ] **Step 6: Test integrazione**
-
-  Compila e invia il form contatti sul sito. Poi:
-  - Vai in **Odoo → CRM → Pipeline** — verifica che il lead appaia
-  - Controlla titolo lead: `Sito web — [Nome] ([Azienda])`
-  - Controlla descrizione: area + messaggio presenti
-  - Se non appare: vai in **WordPress → Strumenti → Debug** (attiva `WP_DEBUG_LOG` in `wp-config.php`) e verifica `/wp-content/debug.log`
-
-- [ ] **Step 7: Configura tag CRM in Odoo (opzionale)**
-
-  In **Odoo → CRM → Configurazione → Tag**, crea tag `Sito Web`. Aggiorna plugin:
-  ```php
-  // Recupera ID tag con: Odoo → Settings → Technical → Tag → nota ID dalla URL
-  'tag_ids' => [[4, ID_TAG_SITO_WEB]],
-  ```
-
-- [ ] **Step 8: Configura DNS Odoo → WordPress hosting**
-
-  Poiché il DNS di `debro.it` è gestito da Odoo Online, prima del lancio:
-
-  Vai in **Odoo → Settings → Domain Names → debro.it → DNS Records**.
-
-  Aggiungi/modifica:
-  ```
-  Tipo A     Nome: @    Valore: [IP del hosting WordPress]   TTL: 3600
-  Tipo A     Nome: www  Valore: [IP del hosting WordPress]   TTL: 3600
-  ```
-
-  Oppure, se usi Cloudflare (raccomandato per Task 12):
-  - In Odoo DNS: imposta nameservers su `ns1.cloudflare.com` / `ns2.cloudflare.com`
-  - Gestisci tutti i record A/CNAME da Cloudflare
-
-  ⚠️ Propagazione DNS: fino a 48h. Pianifica cambio in orario bassa traffico.
-
-- [ ] **Step 9: Checkpoint**
-
-  ```bash
-  git add wp-content/plugins/debro-odoo-bridge/
-  git commit -m "feat: Odoo CRM bridge — form leads via XML-RPC"
+  git add scripts/12_seo_check.py
+  git commit -m "feat: SEO verified, pre-launch checklist complete"
   ```
 
 ---
@@ -1208,21 +1301,20 @@
 ## Riepilogo task e dipendenze
 
 ```
-Task 1: Hosting + WordPress install
-Task 2: Plugin (dipende da 1)
-Task 3: Design system globale (dipende da 2)
-Task 4: Template BU Elementor (dipende da 3)
-Task 5: Homepage (dipende da 3)
-Task 6: Consulting (dipende da 4)
-Task 7: Software (dipende da 4)
-Task 8: Formazione (dipende da 4)
-Task 9: AI (dipende da 4)
-Task 10: Contatti (dipende da 3) — può procedere in parallelo con 6-9
+Task 1:  Setup base Odoo Website (prerequisito tutto)
+Task 2:  Design system CSS globale (dipende da 1)
+Task 3:  Upload asset / loghi (dipende da 1) — parallelo con 2
+Task 4:  Menu principale (dipende da 1)
+Task 5:  Homepage (dipende da 2, 3)
+Task 6:  Consulting (dipende da 2)   ┐
+Task 7:  Software (dipende da 2)     │ eseguibili in parallelo
+Task 8:  Formazione (dipende da 2)   │ dopo Task 2
+Task 9:  AI (dipende da 2)           ┘
+Task 10: Contatti (dipende da 2) — parallelo con 6-9
 Task 11: Multilingua (dipende da 5,6,7,8,9,10)
 Task 12: SEO + lancio (dipende da 11)
-Task 13: Odoo CRM bridge (dipende da 10) — eseguibile dopo lancio
 ```
 
-**Task 6, 7, 8, 9 possono essere eseguiti in parallelo dopo Task 4.**
-**Task 10 può essere eseguito in parallelo con 6-9.**
-**Task 13 è post-lancio opzionale ma raccomandato.**
+**Task 2 e 3 paralleli.**
+**Task 6, 7, 8, 9, 10 paralleli dopo Task 2.**
+**~80% automatable via script Python. Step manuali marcati ⚙️.**

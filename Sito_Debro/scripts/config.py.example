@@ -1,0 +1,7 @@
+# Copia questo file in config.py e compila i valori reali.
+# NON committare config.py — è in .gitignore.
+
+ODOO_URL     = "https://INSERISCI.odoo.com"   # es. https://debro.odoo.com
+API_KEY      = "INSERISCI_API_KEY"             # Settings → Users → [utente] → API Keys → New
+WEBSITE_ID   = 1       # recuperato con scripts/01_setup.py Step 1
+MAIN_MENU_ID = None    # recuperato con scripts/01_setup.py Step 3
