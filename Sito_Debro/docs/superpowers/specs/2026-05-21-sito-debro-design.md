@@ -4,6 +4,8 @@
 **Stato:** Approvato  
 **Piattaforma:** WordPress + Elementor Pro + tema Astra  
 **Lingua:** IT + EN  
+**Gestione dominio/DNS:** Odoo Online 19.0  
+**Integrazione CRM:** Odoo Online 19.0 — XML-RPC (vedi sezione 10)  
 
 ---
 
@@ -13,9 +15,11 @@
 - **CMS:** WordPress (ultima versione stabile)
 - **Page builder:** Elementor Pro
 - **Tema base:** Astra (versione Pro consigliata per header/footer builder)
-- **Plugin essenziali:** Elementor Pro, Astra Pro, Yoast SEO, WP Rocket (caching), Wordfence (sicurezza), WPML o Polylang (multilingua IT/EN), Contact Form 7 o WPForms (form contatti), Cookie Law Info (GDPR banner)
+- **Plugin essenziali:** Elementor Pro, Astra Pro, Yoast SEO, WP Rocket (caching), Wordfence (sicurezza), WPML o Polylang (multilingua IT/EN), WPForms (form contatti), Cookie Law Info (GDPR banner), WP Mail SMTP, Debro Odoo Bridge (custom)
 - **Hosting:** VPS o hosting managed WordPress (es. Kinsta, WP Engine, SiteGround Business) — non hosting condiviso
 - **CDN:** Cloudflare (piano gratuito sufficiente)
+- **Gestione DNS:** Odoo Online 19.0 — DNS records gestiti dal pannello Odoo (`Settings → Domain Names → debro.it`). Opzione consigliata: delegare nameservers a Cloudflare per maggiore controllo e performance (vedi sezione 10)
+- **CRM:** Odoo Online 19.0 — lead da form contatti inviati via XML-RPC (plugin custom `debro-odoo-bridge`)
 
 ### Struttura URL
 ```
@@ -235,7 +239,39 @@ Tutto il copy IT è prodotto e approvato. Include:
 |---|---|---|
 | Hosting provider | Da decidere | Raccomandato: Kinsta o SiteGround Business |
 | Plugin multilingua | Da decidere | WPML (robusto, a pagamento) vs Polylang (gratuito, meno SEO features) |
-| Dominio | Da verificare | debro.it — verificare disponibilità e proprietà |
+| Dominio | ✓ Chiarito | debro.it gestito via Odoo Online 19 — nessun trasferimento necessario, solo aggiornamento record DNS |
+| DNS management | Da eseguire | Opzione A: record A diretti in Odoo. Opzione B: delega nameservers a Cloudflare (raccomandato) |
 | Copy EN | Da produrre | Dopo approvazione IT completo |
 | Contenuto BInclusion | Da validare | Il copy attuale è basato su assunzioni |
 | Casi PMI per Debro AI | Da raccogliere | Al lancio si può usare mini-FAQ come placeholder |
+
+---
+
+## 10. Integrazione Odoo Online 19.0
+
+### Gestione DNS
+Il dominio `debro.it` è registrato e gestito tramite Odoo Online 19.0.
+
+**Durante sviluppo:** usare sottodominio staging (es. `staging.debro.it`) — aggiungere record A in Odoo DNS che punta al nuovo hosting. Non toccare il record A principale finché il sito WordPress non è pronto al lancio.
+
+**Al lancio:** aggiornare record A principale in Odoo (`Settings → Domain Names → debro.it → DNS Records`) per puntare all'IP del hosting WordPress. Se si usa Cloudflare, delegare i nameservers prima.
+
+### Integrazione CRM — form contatti → lead Odoo
+- **Meccanismo:** plugin WordPress custom `debro-odoo-bridge` (vedi Task 13 del piano)
+- **Protocollo:** XML-RPC → endpoint `/xmlrpc/2/common` (auth) + `/xmlrpc/2/object` (operazioni)
+- **Autenticazione:** API Key Odoo (non password — più sicuro, revocabile)
+- **Oggetto creato:** `crm.lead` con nome, azienda, email, telefono, area di interesse, messaggio
+- **Limiti Odoo Online SaaS:** no moduli custom non approvati da Odoo App Store — solo API esposte utilizzabili
+
+### API Odoo disponibili
+| Endpoint | Uso |
+|---|---|
+| `POST /xmlrpc/2/common` → `authenticate` | Ottieni UID sessione |
+| `POST /xmlrpc/2/object` → `execute_kw` | CRUD su qualsiasi modello Odoo |
+| `POST /web/dataset/call_kw` | JSON-RPC alternativo |
+
+### Credenziali necessarie (da raccogliere prima di Task 13)
+- URL istanza: `https://[nome].odoo.com`
+- Database name: Odoo → `Settings → Technical → Database Structure`
+- Username: email account Odoo
+- API Key: `Settings → Users → [utente] → API Keys → New`

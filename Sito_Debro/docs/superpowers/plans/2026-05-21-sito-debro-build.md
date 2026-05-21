@@ -51,11 +51,33 @@
 
   Vai in **Articoli** → elimina "Hello World". Vai in **Pagine** → elimina "Sample Page".
 
-- [ ] **Step 6: Verifica**
+- [ ] **Step 6: Configura DNS Odoo → WordPress hosting**
+
+  Il DNS di `debro.it` è gestito da Odoo Online. Vai in **Odoo → Settings → Domain Names → debro.it → DNS Records**.
+
+  **Opzione A — gestione DNS diretta in Odoo (semplice):**
+  ```
+  Tipo A    Nome: @    Valore: [IP hosting WordPress]   TTL: 3600
+  Tipo A    Nome: www  Valore: [IP hosting WordPress]   TTL: 3600
+  ```
+
+  **Opzione B — delega a Cloudflare (raccomandato per Task 12 — performance + sicurezza):**
+  - Crea account Cloudflare → aggiungi dominio `debro.it`
+  - Cloudflare rileva i record DNS esistenti automaticamente
+  - In Odoo → DNS Records: sostituisci i nameservers con quelli Cloudflare:
+    ```
+    ns1.cloudflare.com
+    ns2.cloudflare.com
+    ```
+  - Gestisci tutti i record A/CNAME da Cloudflare da quel momento
+
+  ⚠️ Propagazione DNS: fino a 48h. Esegui questo step prima di iniziare lo sviluppo su staging — usa sottodominio `staging.debro.it` durante la build per non interrompere eventuali servizi Odoo esistenti su `debro.it`.
+
+- [ ] **Step 7: Verifica**
 
   Apri `debro.it` (o staging URL) nel browser. Vedi schermata WordPress base. Admin login funziona. ✓
 
-- [ ] **Step 7: Checkpoint git**
+- [ ] **Step 8: Checkpoint git**
 
   ```bash
   # Esporta settings WordPress come riferimento
@@ -990,6 +1012,199 @@
 
 ---
 
+---
+
+## Task 13: Integrazione Odoo CRM — lead da form contatti
+
+**Checkpoint:** Ogni submit del form contatti WordPress crea automaticamente un lead in Odoo CRM. Email di notifica Odoo inviata. Dati visibili in CRM → Pipeline.
+
+**Prerequisiti:** Task 10 completato (form WPForms attivo). Odoo Online 19 con modulo CRM attivo.
+
+**Credenziali necessarie prima di iniziare:**
+- URL istanza Odoo (es. `https://debro.odoo.com`)
+- Database name (visibile in Settings → Technical → Database)
+- Username (email account Odoo)
+- API Key Odoo: vai in **Odoo → Settings → Users → [tuo utente] → API Keys → New**
+
+---
+
+- [ ] **Step 1: Crea file di configurazione credenziali**
+
+  Nella root del progetto WordPress (fuori dalla webroot, oppure come costante in `wp-config.php`):
+
+  ```php
+  // In wp-config.php — aggiungi dopo le costanti DB
+  define('ODOO_URL',      'https://debro.odoo.com');
+  define('ODOO_DB',       'debro');           // sostituisci col database name reale
+  define('ODOO_USER',     'vincenzo.defalco@debro.it');
+  define('ODOO_API_KEY',  'YOUR_API_KEY');    // mai committare il valore reale
+  ```
+
+  ⚠️ Aggiungi `wp-config.php` a `.gitignore` se non già presente (contiene credenziali).
+
+- [ ] **Step 2: Crea plugin WordPress per bridge Odoo**
+
+  Crea file: `wp-content/plugins/debro-odoo-bridge/debro-odoo-bridge.php`
+
+  ```php
+  <?php
+  /**
+   * Plugin Name: Debro Odoo Bridge
+   * Description: Invia lead da WPForms a Odoo CRM via XML-RPC
+   * Version: 1.0
+   */
+
+  if ( ! defined( 'ABSPATH' ) ) exit;
+
+  add_action( 'wpforms_process_complete', 'debro_send_lead_to_odoo', 10, 4 );
+
+  function debro_send_lead_to_odoo( $fields, $entry, $form_data, $entry_id ) {
+      // Esegui solo per il form Contatti (verifica l'ID del form in WPForms → lista form)
+      $contact_form_id = 1; // <-- sostituisci con ID reale del form
+      if ( (int) $form_data['id'] !== $contact_form_id ) {
+          return;
+      }
+
+      $nome          = sanitize_text_field( $fields[1]['value'] ?? '' );
+      $azienda       = sanitize_text_field( $fields[2]['value'] ?? '' );
+      $email         = sanitize_email(      $fields[3]['value'] ?? '' );
+      $telefono      = sanitize_text_field( $fields[4]['value'] ?? '' );
+      $area          = sanitize_text_field( $fields[5]['value'] ?? '' );
+      $messaggio     = sanitize_textarea_field( $fields[6]['value'] ?? '' );
+
+      $odoo_url  = ODOO_URL;
+      $db        = ODOO_DB;
+      $user      = ODOO_USER;
+      $api_key   = ODOO_API_KEY;
+
+      // Autenticazione XML-RPC
+      $uid = debro_odoo_xmlrpc(
+          $odoo_url . '/xmlrpc/2/common',
+          'authenticate',
+          [ $db, $user, $api_key, [] ]
+      );
+
+      if ( ! $uid || is_wp_error( $uid ) ) {
+          error_log( '[Debro Odoo Bridge] Autenticazione fallita: ' . print_r( $uid, true ) );
+          return;
+      }
+
+      // Crea lead in CRM
+      $lead_id = debro_odoo_xmlrpc(
+          $odoo_url . '/xmlrpc/2/object',
+          'execute_kw',
+          [
+              $db, $uid, $api_key,
+              'crm.lead', 'create',
+              [[
+                  'name'         => 'Sito web — ' . $nome . ( $azienda ? ' (' . $azienda . ')' : '' ),
+                  'contact_name' => $nome,
+                  'partner_name' => $azienda,
+                  'email_from'   => $email,
+                  'phone'        => $telefono,
+                  'description'  => "Area: $area\n\n$messaggio",
+                  'tag_ids'      => [],
+                  'source_id'    => false,
+              ]]
+          ]
+      );
+
+      if ( is_wp_error( $lead_id ) ) {
+          error_log( '[Debro Odoo Bridge] Creazione lead fallita: ' . $lead_id->get_error_message() );
+      } else {
+          error_log( '[Debro Odoo Bridge] Lead creato: ID ' . $lead_id );
+      }
+  }
+
+  function debro_odoo_xmlrpc( string $endpoint, string $method, array $params ) {
+      $request = xmlrpc_encode_request( $method, $params );
+
+      $response = wp_remote_post( $endpoint, [
+          'headers'     => [ 'Content-Type' => 'text/xml' ],
+          'body'        => $request,
+          'timeout'     => 15,
+          'sslverify'   => true,
+      ]);
+
+      if ( is_wp_error( $response ) ) {
+          return $response;
+      }
+
+      $body   = wp_remote_retrieve_body( $response );
+      $parsed = xmlrpc_decode( $body );
+
+      if ( is_array( $parsed ) && xmlrpc_is_fault( $parsed ) ) {
+          return new WP_Error( 'odoo_fault', $parsed['faultString'] );
+      }
+
+      return $parsed;
+  }
+  ```
+
+- [ ] **Step 3: Attiva plugin**
+
+  Vai in **WordPress → Plugin → Plugin installati**. Cerca `Debro Odoo Bridge`. Attiva.
+
+- [ ] **Step 4: Recupera ID del form contatti**
+
+  Vai in **WPForms → Tutti i form**. Nota l'ID numerico del form Contatti (visibile nella colonna "Shortcode" o nell'URL di modifica). Aggiorna `$contact_form_id` nel plugin con il valore corretto.
+
+- [ ] **Step 5: Mappa ID campi WPForms**
+
+  Apri il form Contatti in WPForms → Editor. Per ogni campo, clicca e nota l'ID campo (pannello DX → "Field ID"). Aggiorna le righe `$fields[N]` nel plugin con gli ID reali:
+
+  | Variabile | Campo |
+  |---|---|
+  | `$fields[1]` | Nome e Cognome |
+  | `$fields[2]` | Azienda |
+  | `$fields[3]` | Email |
+  | `$fields[4]` | Telefono |
+  | `$fields[5]` | Area di interesse |
+  | `$fields[6]` | Messaggio |
+
+- [ ] **Step 6: Test integrazione**
+
+  Compila e invia il form contatti sul sito. Poi:
+  - Vai in **Odoo → CRM → Pipeline** — verifica che il lead appaia
+  - Controlla titolo lead: `Sito web — [Nome] ([Azienda])`
+  - Controlla descrizione: area + messaggio presenti
+  - Se non appare: vai in **WordPress → Strumenti → Debug** (attiva `WP_DEBUG_LOG` in `wp-config.php`) e verifica `/wp-content/debug.log`
+
+- [ ] **Step 7: Configura tag CRM in Odoo (opzionale)**
+
+  In **Odoo → CRM → Configurazione → Tag**, crea tag `Sito Web`. Aggiorna plugin:
+  ```php
+  // Recupera ID tag con: Odoo → Settings → Technical → Tag → nota ID dalla URL
+  'tag_ids' => [[4, ID_TAG_SITO_WEB]],
+  ```
+
+- [ ] **Step 8: Configura DNS Odoo → WordPress hosting**
+
+  Poiché il DNS di `debro.it` è gestito da Odoo Online, prima del lancio:
+
+  Vai in **Odoo → Settings → Domain Names → debro.it → DNS Records**.
+
+  Aggiungi/modifica:
+  ```
+  Tipo A     Nome: @    Valore: [IP del hosting WordPress]   TTL: 3600
+  Tipo A     Nome: www  Valore: [IP del hosting WordPress]   TTL: 3600
+  ```
+
+  Oppure, se usi Cloudflare (raccomandato per Task 12):
+  - In Odoo DNS: imposta nameservers su `ns1.cloudflare.com` / `ns2.cloudflare.com`
+  - Gestisci tutti i record A/CNAME da Cloudflare
+
+  ⚠️ Propagazione DNS: fino a 48h. Pianifica cambio in orario bassa traffico.
+
+- [ ] **Step 9: Checkpoint**
+
+  ```bash
+  git add wp-content/plugins/debro-odoo-bridge/
+  git commit -m "feat: Odoo CRM bridge — form leads via XML-RPC"
+  ```
+
+---
+
 ## Riepilogo task e dipendenze
 
 ```
@@ -1005,7 +1220,9 @@ Task 9: AI (dipende da 4)
 Task 10: Contatti (dipende da 3) — può procedere in parallelo con 6-9
 Task 11: Multilingua (dipende da 5,6,7,8,9,10)
 Task 12: SEO + lancio (dipende da 11)
+Task 13: Odoo CRM bridge (dipende da 10) — eseguibile dopo lancio
 ```
 
 **Task 6, 7, 8, 9 possono essere eseguiti in parallelo dopo Task 4.**
 **Task 10 può essere eseguito in parallelo con 6-9.**
+**Task 13 è post-lancio opzionale ma raccomandato.**
